@@ -38,7 +38,12 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', async (req, reply) => {
     if (!req.url.startsWith('/api/') || isPublic(req.url)) return;
     if (!apiConfig.isAuthenticated(req)) {
-      return reply.code(401).send({ error: 'unauthorised' });
+      // Distinguish the two failure modes: no cookie means the browser never
+      // stored or sent one, a bad signature means COOKIE_SECRET changed under
+      // a live session. They need different fixes, so say which it is.
+      const reason = req.cookies[apiConfig.cookieName] ? 'cookie_rejected' : 'no_cookie';
+      req.log.warn({ url: req.url, reason, ip: req.ip }, 'unauthenticated request');
+      return reply.code(401).send({ error: 'unauthorised', reason });
     }
   });
 

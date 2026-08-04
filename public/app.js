@@ -102,7 +102,15 @@ async function api(path, options = {}) {
     ...options,
   });
   if (res.status === 401) {
+    // Send the operator back to the login screen rather than leaving a stale,
+    // empty UI that looks functional but has no data behind it.
     showLogin();
+    const { reason } = await res.json().catch(() => ({}));
+    $('login-error').textContent =
+      reason === 'cookie_rejected'
+        ? 'انتهت صلاحية الجلسة، الرجاء تسجيل الدخول مرة أخرى'
+        : 'الرجاء تسجيل الدخول';
+    $('login-error').hidden = false;
     throw new Error('unauthorised');
   }
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'error');
@@ -337,9 +345,15 @@ $('search').addEventListener('input', renderDeviceList);
 
 $('unlock-btn').addEventListener('click', () => {
   const d = state.devices.find((x) => x.device_id === state.selectedId);
-  if (!d) return;
+  if (!d) {
+    toast('لم يتم اختيار مركبة', 'bad');
+    return;
+  }
   $('unlock-device').textContent = `${d.name} (${d.plate_number ?? d.device_id})`;
   $('unlock-reason').value = '';
+  // Pin the target to the modal itself. Reading it back from shared state at
+  // submit time is how a null device id reached the server.
+  $('unlock-modal').dataset.deviceId = d.device_id;
   $('unlock-modal').hidden = false;
   $('unlock-reason').focus();
 });
@@ -348,9 +362,14 @@ $('unlock-cancel').addEventListener('click', () => ($('unlock-modal').hidden = t
 
 $('unlock-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const deviceId = state.selectedId;
+  const deviceId = $('unlock-modal').dataset.deviceId;
   const reason = $('unlock-reason').value.trim();
   $('unlock-modal').hidden = true;
+
+  if (!deviceId || !/^\d{10}$/.test(deviceId)) {
+    toast('لم يتم اختيار مركبة صالحة', 'bad');
+    return;
+  }
 
   try {
     const result = await api(`/api/devices/${deviceId}/unlock`, {
@@ -421,7 +440,13 @@ async function start() {
   $('login').hidden = true;
   $('app').hidden = false;
   initMap();
-  await refresh();
+  try {
+    await refresh();
+  } catch {
+    // api() has already redirected to login; don't open a live socket or
+    // start timers against a session we know is dead.
+    return;
+  }
   connectWebSocket();
   // Timestamps are relative ("2 minutes ago"), so re-render even when idle.
   setInterval(renderDeviceList, 30000);
