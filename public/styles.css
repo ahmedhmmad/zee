@@ -20,6 +20,14 @@
 
 * { box-sizing: border-box; }
 
+/*
+ * The `hidden` attribute gets its display:none from the UA stylesheet, which
+ * ANY author rule setting display will beat - so `.modal { display: grid }`
+ * silently defeated `hidden` and left the unlock dialog permanently on top of
+ * the page. Make the attribute authoritative.
+ */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   height: 100%;

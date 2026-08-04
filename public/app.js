@@ -120,6 +120,9 @@ async function api(path, options = {}) {
 // --- Auth -------------------------------------------------------------------
 
 function showLogin() {
+  // Dismiss any open overlay too: a modal left up would cover the login form.
+  $('unlock-modal').hidden = true;
+  $('detail').hidden = true;
   $('login').hidden = false;
   $('app').hidden = true;
 }
@@ -453,7 +456,12 @@ async function start() {
 }
 
 (async () => {
-  const { authenticated } = await fetch('/api/session').then((r) => r.json());
-  if (authenticated) start();
-  else showLogin();
+  try {
+    const { authenticated } = await fetch('/api/session').then((r) => r.json());
+    if (authenticated) return start();
+  } catch {
+    // Network or server unavailable — fall through to the login screen rather
+    // than leaving the page in whatever state the markup happened to start in.
+  }
+  showLogin();
 })();
