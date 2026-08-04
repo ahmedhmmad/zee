@@ -8,3 +8,4 @@ dist/
 # not-for-redistribution. Kept locally, not committed. If this repo is private
 # and you want them versioned, delete these two lines.
 *.pdf
+.cache/

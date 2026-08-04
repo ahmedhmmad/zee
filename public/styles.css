@@ -15,7 +15,9 @@
   --danger: #d9483b;
   --warn: #d9922b;
   --radius: 10px;
-  --font: 'Cairo', system-ui, 'Segoe UI', sans-serif;
+  /* Cairo is a progressive enhancement. The fallbacks all ship with Arabic
+     coverage on their platforms, so the UI is legible if it never loads. */
+  --font: 'Cairo', 'Segoe UI', Tahoma, 'Noto Sans Arabic', 'Geeza Pro', system-ui, sans-serif;
 }
 
 * { box-sizing: border-box; }

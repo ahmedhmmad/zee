@@ -4,11 +4,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>منظومة أقفال الشاحنات</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap" rel="stylesheet" />
-  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+  <!-- Served from our own origin: external CDNs are not reliably reachable
+       from Libya, and the map is not optional to this application. -->
+  <link href="/vendor/maplibre-gl.css" rel="stylesheet" />
   <link rel="stylesheet" href="/styles.css" />
+  <!-- Font is progressive enhancement; the stack in styles.css covers Arabic
+       on every platform if this never loads. -->
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap"
+        rel="stylesheet" media="print" onload="this.media='all'" />
 </head>
 <body>
 
@@ -103,7 +106,7 @@
 
 <div id="toast" class="toast" hidden></div>
 
-<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="/vendor/maplibre-gl.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

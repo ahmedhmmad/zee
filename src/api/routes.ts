@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { pool } from '../db.ts';
 import { apiConfig } from './config.ts';
+import { tileRoutes } from './tiles.ts';
 
 const DEVICE_ID = /^\d{10}$/;
 
@@ -46,6 +47,10 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(401).send({ error: 'unauthorised', reason });
     }
   });
+
+  // Registered inside this scope so it inherits the auth hook above: map
+  // tiles should not be an open proxy for anyone who finds the URL.
+  await app.register(tileRoutes);
 
   app.get('/api/devices', async () => {
     const { rows } = await pool.query(`

@@ -155,7 +155,10 @@ function initMap() {
       sources: {
         osm: {
           type: 'raster',
-          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+          // Proxied through our own origin: OSM is not reliably reachable
+          // from Libya, and the server-side cache keeps the map working
+          // even when upstream is down.
+          tiles: [`${location.origin}/api/tiles/{z}/{x}/{y}.png`],
           tileSize: 256,
           attribution: '© OpenStreetMap',
         },
