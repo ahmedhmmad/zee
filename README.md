@@ -84,7 +84,7 @@ npm run gateway
 Then in a second terminal, a fake truck driving around Tripoli:
 
 ```bash
-npm run simulate 8000620011
+npm run simulate 8000620011 gw.ahmedhammad.page
 ```
 
 Queue an unlock and watch it flow through `queued → sent → confirmed`:

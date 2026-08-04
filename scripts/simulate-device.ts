@@ -7,15 +7,21 @@
  *
  * Drives a loop around Tripoli so the map has something to show.
  *
- *   node --env-file-if-exists=.env scripts/simulate-device.ts 8000620011
+ *   npm run simulate <deviceId> [host] [port]
+ *
+ *   npm run simulate 8000620011
+ *   npm run simulate 8000620011 gw.ahmedhammad.page
+ *
+ * Arguments rather than environment variables, so the same line works in
+ * cmd.exe, PowerShell and bash without modification.
  */
 
 import net from 'node:net';
 import { Framer, decodeFrame } from '../src/protocol/index.ts';
 
 const deviceId = process.argv[2] ?? '8000620011';
-const host = process.env.SIM_HOST ?? '127.0.0.1';
-const port = Number(process.env.SIM_PORT ?? process.env.GATEWAY_PORT ?? 10001);
+const host = process.argv[3] ?? process.env.SIM_HOST ?? '127.0.0.1';
+const port = Number(process.argv[4] ?? process.env.SIM_PORT ?? process.env.GATEWAY_PORT ?? 10001);
 const intervalMs = Number(process.env.SIM_INTERVAL_MS ?? 10_000);
 
 // A rough loop through Tripoli: port area -> city centre -> airport road.
