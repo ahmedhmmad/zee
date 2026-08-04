@@ -84,6 +84,13 @@ npm run gateway
 Then in a second terminal, a fake truck driving around Tripoli:
 
 ```bash
+npm run simulate 8000620011
+```
+
+To drive the deployed gateway instead — which also proves both firewalls and
+the DNS record — pass the host:
+
+```bash
 npm run simulate 8000620011 gw.ahmedhammad.page
 ```
 
