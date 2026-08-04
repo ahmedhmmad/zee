@@ -191,6 +191,22 @@ export async function setConnected(deviceId: string, connected: boolean): Promis
   );
 }
 
+/**
+ * Clear every connection flag at startup.
+ *
+ * Sockets live in this process's memory, so after a restart or a crash none
+ * exist - but device_state may still say `is_connected = true` because the
+ * close handlers never ran. Showing a truck as reachable when it isn't is
+ * worse than showing it offline: an operator would expect an unlock to land
+ * immediately. Devices re-flag themselves as they reconnect.
+ */
+export async function clearAllConnections(): Promise<number> {
+  const { rowCount } = await pool.query(
+    'UPDATE device_state SET is_connected = false, updated_at = now() WHERE is_connected',
+  );
+  return rowCount ?? 0;
+}
+
 export async function touchLastSeen(deviceId: string): Promise<void> {
   await pool.query(
     `UPDATE device_state SET last_seen_at = now(), updated_at = now() WHERE device_id = $1`,

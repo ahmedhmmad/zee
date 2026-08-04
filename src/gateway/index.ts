@@ -10,6 +10,7 @@ import net from 'node:net';
 import { config } from '../config.ts';
 import { createListener, pool } from '../db.ts';
 import { DeviceSession } from './session.ts';
+import { clearAllConnections } from './store.ts';
 
 /**
  * Live sockets by device ID. In-memory is correct at single-instance scale;
@@ -49,6 +50,10 @@ server.on('error', (err) => {
 async function main(): Promise<void> {
   await pool.query('SELECT 1');
   console.log('[gateway] database connection ok');
+
+  // No sockets exist yet, so any surviving "connected" flag is stale.
+  const cleared = await clearAllConnections();
+  if (cleared > 0) console.log(`[gateway] cleared ${cleared} stale connection flag(s)`);
 
   // Dispatch the instant a command is queued, instead of polling.
   const listener = await createListener('command_queued', (deviceId) => {
