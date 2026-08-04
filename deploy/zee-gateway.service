@@ -1,0 +1,29 @@
+[Unit]
+Description=Zee JT701D device gateway
+Documentation=https://locks.ahmedhammad.page
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=zee
+WorkingDirectory=/home/zee/htdocs/locks.ahmedhammad.page
+EnvironmentFile=/home/zee/htdocs/locks.ahmedhammad.page/.env
+ExecStart=/usr/bin/node src/gateway/index.ts
+Restart=always
+RestartSec=5
+
+# Runs unprivileged: the gateway binds 10001, which is above 1024, so no
+# capabilities are needed.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/zee/htdocs/locks.ahmedhammad.page
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zee-gateway
+
+[Install]
+WantedBy=multi-user.target

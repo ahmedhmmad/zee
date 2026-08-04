@@ -1,0 +1,10 @@
+node_modules/
+.env
+*.log
+dist/
+.DS_Store
+
+# Vendor manuals are copyright Shenzhen Joint Technology and marked
+# not-for-redistribution. Kept locally, not committed. If this repo is private
+# and you want them versioned, delete these two lines.
+*.pdf

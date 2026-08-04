@@ -1,0 +1,24 @@
+{
+  "name": "zee-lock-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Monitoring and remote-unlock platform for Jointech JT701D/JT709EX locks on fuel tankers",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "gateway": "node --env-file-if-exists=.env src/gateway/index.ts",
+    "simulate": "node --env-file-if-exists=.env scripts/simulate-device.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,1 @@
+This folder contains manuals for two different Locks.
