@@ -11,9 +11,14 @@
     "test": "node --test --experimental-strip-types test/*.test.ts",
     "gateway": "node --env-file-if-exists=.env src/gateway/index.ts",
     "simulate": "node --env-file-if-exists=.env scripts/simulate-device.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "api": "node --env-file-if-exists=.env src/api/server.ts"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/static": "^10.1.2",
+    "@fastify/websocket": "^11.3.0",
+    "fastify": "^5.11.2",
     "pg": "^8.13.1"
   },
   "devDependencies": {

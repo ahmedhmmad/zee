@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>منظومة أقفال الشاحنات</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap" rel="stylesheet" />
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+<!-- تسجيل الدخول -->
+<div id="login" class="login-screen">
+  <form class="login-card" id="login-form">
+    <h1>منظومة أقفال الشاحنات</h1>
+    <p class="muted">الرجاء إدخال كلمة المرور للمتابعة</p>
+    <label for="password">كلمة المرور</label>
+    <input type="password" id="password" autocomplete="current-password" required />
+    <button type="submit" class="btn btn-primary">دخول</button>
+    <p class="error" id="login-error" hidden>كلمة المرور غير صحيحة</p>
+  </form>
+</div>
+
+<!-- الواجهة الرئيسية -->
+<div id="app" hidden>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">🔒</span>
+      <span>منظومة أقفال الشاحنات</span>
+    </div>
+    <div class="topbar-end">
+      <span id="conn-status" class="pill pill-muted">جارٍ الاتصال…</span>
+      <button id="logout" class="btn btn-ghost">خروج</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <h2>المركبات</h2>
+        <span id="device-count" class="muted"></span>
+      </div>
+      <input type="search" id="search" placeholder="بحث بالاسم أو رقم اللوحة…" />
+      <ul id="device-list" class="device-list"></ul>
+    </aside>
+
+    <section class="map-pane">
+      <div id="map"></div>
+    </section>
+
+    <aside class="detail" id="detail" hidden>
+      <button class="detail-close" id="detail-close" aria-label="إغلاق">✕</button>
+      <h2 id="d-name"></h2>
+      <p class="muted" id="d-plate"></p>
+
+      <div class="stat-grid">
+        <div class="stat"><span class="stat-label">حالة القفل</span><span class="stat-value" id="d-lock"></span></div>
+        <div class="stat"><span class="stat-label">البطارية</span><span class="stat-value" id="d-battery"></span></div>
+        <div class="stat"><span class="stat-label">السرعة</span><span class="stat-value" id="d-speed"></span></div>
+        <div class="stat"><span class="stat-label">الأقمار</span><span class="stat-value" id="d-sats"></span></div>
+      </div>
+
+      <dl class="kv">
+        <dt>حبل القفل</dt><dd id="d-rope"></dd>
+        <dt>آخر تحديث</dt><dd id="d-seen"></dd>
+        <dt>الموقع</dt><dd id="d-pos" class="ltr-inline"></dd>
+        <dt>سبب الاستيقاظ</dt><dd id="d-wake"></dd>
+      </dl>
+
+      <div id="d-alarms" class="alarms" hidden></div>
+
+      <button id="unlock-btn" class="btn btn-danger btn-block">فتح القفل عن بُعد</button>
+
+      <h3>الأوامر الأخيرة</h3>
+      <ul id="command-list" class="feed"></ul>
+
+      <h3>سجل الأحداث</h3>
+      <ul id="event-list" class="feed"></ul>
+    </aside>
+  </main>
+</div>
+
+<!-- تأكيد الفتح -->
+<div id="unlock-modal" class="modal" hidden>
+  <form class="modal-card" id="unlock-form">
+    <h2>تأكيد فتح القفل</h2>
+    <p class="warn">
+      سيتم إرسال أمر فتح القفل إلى <strong id="unlock-device"></strong>.
+      لا يُعد الأمر منفَّذاً إلا بعد تأكيد الجهاز نفسه.
+    </p>
+    <label for="unlock-reason">سبب الفتح (إلزامي)</label>
+    <input type="text" id="unlock-reason" required minlength="3"
+           placeholder="مثال: تفريغ الحمولة في محطة الوقود" />
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="unlock-cancel">إلغاء</button>
+      <button type="submit" class="btn btn-danger">تأكيد الفتح</button>
+    </div>
+  </form>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

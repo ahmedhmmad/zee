@@ -1,0 +1,27 @@
+[Unit]
+Description=Zee lock platform API and web UI
+Documentation=https://locks.ahmedhammad.page
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=zee
+WorkingDirectory=/home/zee/htdocs/locks.ahmedhammad.page
+EnvironmentFile=/home/zee/htdocs/locks.ahmedhammad.page/.env
+ExecStart=/usr/bin/node src/api/server.ts
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/zee/htdocs/locks.ahmedhammad.page
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zee-api
+
+[Install]
+WantedBy=multi-user.target
