@@ -10,13 +10,19 @@ function required(name: string): string {
 }
 
 /**
- * Single shared operator password for the MVP. Per-user accounts with roles
- * and dual-approval unlocking are the next step; this exists so the unlock
- * endpoint is never reachable unauthenticated, which would be indefensible on
- * a system that opens fuel tankers.
+ * Test-box escape hatch: with AUTH_DISABLED=true there is no login at all.
+ * Intended for development against the simulator, where there is nothing to
+ * protect. Must not be set once real vehicles are connected.
  */
-const password = required('AUTH_PASSWORD');
+const authDisabled = process.env.AUTH_DISABLED === 'true';
+
+/** Single shared operator password. Not required when auth is disabled. */
+const password = authDisabled ? '' : required('AUTH_PASSWORD');
 const cookieSecret = process.env.COOKIE_SECRET ?? crypto.randomBytes(32).toString('hex');
+
+if (authDisabled) {
+  console.warn('[api] AUTH_DISABLED=true — the UI and unlock endpoint are OPEN. Development only.');
+}
 
 export const apiConfig = {
   port: Number(process.env.API_PORT ?? 3333),
@@ -34,7 +40,10 @@ export const apiConfig = {
     return crypto.timingSafeEqual(a, b);
   },
 
+  authDisabled,
+
   isAuthenticated(req: FastifyRequest): boolean {
+    if (authDisabled) return true;
     const raw = req.cookies[COOKIE_NAME];
     if (!raw) return false;
     const unsigned = req.unsignCookie(raw);
