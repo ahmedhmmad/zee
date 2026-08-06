@@ -31,6 +31,11 @@ const C = {
   textMuted: '#93a7b2',
 };
 
+/**
+ * `widthStops` is a flat [zoom, width, zoom, width, ...] list. Expressed as a
+ * top-level interpolate: MapLibre only accepts ["zoom"] as the direct input to
+ * interpolate or step, never nested inside another expression.
+ */
 function road(id, kinds, color, widthStops, minzoom) {
   return {
     id,
@@ -42,7 +47,7 @@ function road(id, kinds, color, widthStops, minzoom) {
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: {
       'line-color': color,
-      'line-width': { base: 1.4, stops: widthStops },
+      'line-width': ['interpolate', ['exponential', 1.4], ['zoom'], ...widthStops],
     },
   };
 }
@@ -98,10 +103,10 @@ export function buildStyle(pmtilesUrl, glyphsUrl) {
         paint: { 'fill-color': C.building, 'fill-opacity': 0.7 },
       },
 
-      road('roads-minor', ['minor_road', 'path'], C.minor, [[12, 0.4], [16, 3], [18, 8]], 12),
-      road('roads-medium', ['medium_road'], C.medium, [[9, 0.5], [14, 3], [18, 14]], 8),
-      road('roads-major', ['major_road'], C.major, [[7, 0.7], [14, 4], [18, 18]], 6),
-      road('roads-highway', ['highway'], C.highway, [[5, 0.8], [14, 5], [18, 22]], 4),
+      road('roads-minor', ['minor_road', 'path'], C.minor, [12, 0.4, 16, 3, 18, 8], 12),
+      road('roads-medium', ['medium_road'], C.medium, [9, 0.5, 14, 3, 18, 14], 8),
+      road('roads-major', ['major_road'], C.major, [7, 0.7, 14, 4, 18, 18], 6),
+      road('roads-highway', ['highway'], C.highway, [5, 0.8, 14, 5, 18, 22], 4),
 
       {
         id: 'boundaries',
@@ -145,13 +150,15 @@ export function buildStyle(pmtilesUrl, glyphsUrl) {
           'text-field': LABEL,
           'text-font': ['Noto Sans Regular'],
           // Bigger type for bigger places, so Tripoli outranks a village.
+          // Zoom must be the direct input to interpolate, with the per-kind
+          // match nested inside each stop rather than the other way round.
           'text-size': [
-            'match',
-            ['get', 'kind'],
-            'country', 15,
-            'region', 13,
-            ['locality', 'city'], ['interpolate', ['linear'], ['zoom'], 6, 11, 12, 16],
-            11,
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            6, ['match', ['get', 'kind'], 'country', 13, 'region', 11, 10],
+            12, ['match', ['get', 'kind'], 'country', 16, 'region', 14, 13],
+            16, ['match', ['get', 'kind'], 'country', 18, 'region', 16, 15],
           ],
           'text-max-width': 8,
         },
