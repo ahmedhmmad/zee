@@ -184,13 +184,36 @@ export class DeviceSession {
         });
         break;
 
-      case 'command_response':
+      case 'command_response': {
         this.log(`response ${frame.command}: ${frame.params.join(',')}`);
         await store.audit('command_response', frame.deviceId, {
           command: frame.command,
           params: frame.params,
         });
+
+        // A refused unlock is reported here and never produces a P45, so the
+        // command has to be failed explicitly or it stays "sent" forever.
+        //   P43   -> success, wrongCount
+        //   P52,3 -> commandId, success, wrongCount
+        const isStatic = frame.command === 'P43';
+        const isDynamic = frame.command === 'P52' && frame.params[0] === '3';
+        if (isStatic || isDynamic) {
+          const success = isStatic ? frame.params[0] : frame.params[1];
+          const wrongCount = isStatic ? frame.params[1] : frame.params[2];
+          if (success !== '1') {
+            const error = `device refused unlock (wrong password, ${wrongCount ?? '?'} consecutive failures)`;
+            await store.failCommandFromResponse(
+              frame.deviceId,
+              [isStatic ? 'unlock_static' : 'unlock_dynamic'],
+              error,
+            );
+            // Five consecutive failures trips an alarm on the device itself.
+            this.log(`UNLOCK REFUSED — ${wrongCount ?? '?'} consecutive wrong passwords`);
+            await store.audit('unlock_refused', frame.deviceId, { wrongCount });
+          }
+        }
         break;
+      }
     }
   }
 

@@ -100,8 +100,8 @@ export function buildPositionFrame(i: PositionInput): Buffer {
     Buffer.from([0]), // extended status 2
     bcd('868822040248195F'), // IMEI, 15 digits + F filler
     Buffer.from([0x00, 0x00]), // cell id high
-    Buffer.from([0x02, 0x5b]), // MCC 603 = Libya
-    Buffer.from([0x01]), // MNC 1 = Libyana
+    Buffer.from([0x02, 0x5e]), // MCC 606 = Libya
+    Buffer.from([0x01]), // MNC 1 = Al-Madar
     Buffer.from([i.serial & 0xff]),
   ]);
 

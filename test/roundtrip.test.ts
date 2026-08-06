@@ -92,8 +92,8 @@ test('status, battery and speed survive the round trip', () => {
 
 test('the simulated device reports as a Libyan carrier', () => {
   const p = roundTrip(TRIPOLI.lat, TRIPOLI.lon);
-  assert.equal(p.mcc, 603, 'MCC 603 is Libya');
-  assert.equal(p.mnc, 1, 'MNC 1 is Libyana');
+  assert.equal(p.mcc, 606, 'MCC 606 is Libya');
+  assert.equal(p.mnc, 1, 'MNC 1 is Al-Madar; Libyana is 0');
   assert.equal(p.imei, '868822040248195');
 });
 

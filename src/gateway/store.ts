@@ -335,6 +335,31 @@ export async function confirmCommandFromEvent(
   );
 }
 
+/**
+ * Mark an in-flight command failed because the device said so.
+ *
+ * A refused unlock never produces a P45, so without this the command would sit
+ * at 'sent' forever and the UI would keep showing "awaiting device
+ * confirmation" for something the device already rejected.
+ */
+export async function failCommandFromResponse(
+  deviceId: string,
+  commandTypes: string[],
+  error: string,
+): Promise<void> {
+  await pool.query(
+    `WITH matched AS (
+       SELECT id FROM commands
+        WHERE device_id = $1 AND status = 'sent' AND command_type = ANY($2)
+        ORDER BY sent_at DESC LIMIT 1
+     )
+     UPDATE commands c
+        SET status = 'failed', last_error = $3
+       FROM matched m WHERE c.id = m.id`,
+    [deviceId, commandTypes, error],
+  );
+}
+
 export async function audit(
   action: string,
   deviceId: string | null,
