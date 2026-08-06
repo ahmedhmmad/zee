@@ -418,3 +418,8 @@ select {
   margin-block-end: .25rem;
 }
 .locations-list .empty { color: var(--muted); }
+
+/* Arrow points where the vehicle is heading; upright circle when stopped. */
+.truck-arrow { display: inline-block; font-size: 15px; line-height: 1; transition: transform .3s ease; }
+.truck-marker.moving { background: var(--accent); }
+.truck-marker:not(.moving) .truck-arrow { opacity: .85; }

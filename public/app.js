@@ -54,6 +54,20 @@ function formatDuration(seconds) {
   return `${Math.floor(m / 60)} ساعة و${m % 60} دقيقة`;
 }
 
+// Below walking pace the reported heading is whatever the GPS last drifted
+// to, not a direction of travel, so treat the vehicle as stationary.
+const MOVING_KPH = 3;
+
+const COMPASS = ['شمال', 'شمال شرق', 'شرق', 'جنوب شرق', 'جنوب', 'جنوب غرب', 'غرب', 'شمال غرب'];
+
+const isMoving = (d) => Number(d.speed_kph ?? 0) >= MOVING_KPH;
+
+function headingLabel(d) {
+  if (!isMoving(d)) return 'متوقفة';
+  const deg = ((Number(d.heading_deg ?? 0) % 360) + 360) % 360;
+  return `${COMPASS[Math.round(deg / 45) % 8]} · ${Math.round(deg)}°`;
+}
+
 const LOCATION_KINDS = {
   depot: 'مستودع',
   station: 'محطة وقود',
@@ -220,6 +234,8 @@ function syncMarkers() {
     }
     state.map.setMarker(device.device_id, device.latitude, device.longitude, {
       title: device.name,
+      heading: Number(device.heading_deg ?? 0),
+      moving: isMoving(device),
       kind:
         connectionState(device) === 'offline'
           ? 'offline'
@@ -370,6 +386,7 @@ async function renderDetail() {
   $('d-battery').textContent = batteryLabel(d);
   $('d-speed').textContent = d.speed_kph != null ? `${Number(d.speed_kph).toFixed(0)} كم/س` : '—';
   $('d-signal').textContent = signalLabel(d);
+  $('d-heading').textContent = headingLabel(d);
   $('d-sats').textContent = d.satellites ?? '—';
   $('d-rope').textContent = d.rope_inserted == null ? '—' : d.rope_inserted ? 'مُدخَل' : 'مسحوب';
   $('d-mileage').textContent = d.mileage_km != null ? `${d.mileage_km} كم` : '—';
@@ -495,6 +512,7 @@ function selectDevice(deviceId) {
 }
 
 $('detail-close').addEventListener('click', () => {
+  state.map?.clearDestinations?.();
   state.selectedId = null;
   $('detail').hidden = true;
   renderDeviceList();
@@ -576,6 +594,7 @@ async function loadArrivals(deviceId) {
   const list = $('arrival-list');
   try {
     const arrivals = await api(`/api/devices/${deviceId}/arrivals`);
+    drawDestinations(deviceId, arrivals);
     const armed = arrivals.filter((a) => a.is_armed);
     const recent = arrivals.filter((a) => !a.is_armed).slice(0, 3);
 
@@ -626,6 +645,26 @@ async function loadArrivals(deviceId) {
 
 const formatDistance = (m) =>
   Number(m) >= 1000 ? `${(Number(m) / 1000).toFixed(1)} كم` : `${Math.round(Number(m))} م`;
+
+/**
+ * Only armed destinations for the selected vehicle are drawn. Showing every
+ * rule for every truck at once would bury the one the operator is watching.
+ */
+function drawDestinations(deviceId, arrivals) {
+  if (!state.map?.setDestination) return;
+  state.map.clearDestinations();
+
+  const device = state.devices.find((d) => d.device_id === deviceId);
+  const from = device && hasLocation(device) ? { lat: device.latitude, lon: device.longitude } : null;
+
+  for (const a of arrivals.filter((x) => x.is_armed)) {
+    state.map.setDestination(`arrival-${a.id}`, a.latitude, a.longitude, {
+      radiusM: a.radius_m,
+      label: a.name,
+      from,
+    });
+  }
+}
 
 $('arrival-form').addEventListener('submit', async (e) => {
   e.preventDefault();

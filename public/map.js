@@ -84,6 +84,7 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
   });
 
   const markers = new Map();
+  const destinations = new Map();
 
   /**
    * google.maps.Marker is deprecated in favour of AdvancedMarkerElement, but
@@ -93,14 +94,33 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
    * Google give at least 12 months notice before removal, so this is a
    * migration to make when there is a reason, not a fire.
    */
-  const iconFor = (kind) => ({
-    path: google.maps.SymbolPath.CIRCLE,
-    scale: 11,
-    fillColor: kind === 'unlocked' ? '#d9483b' : kind === 'offline' ? '#55666f' : '#2f9e6e',
-    fillOpacity: 1,
-    strokeColor: '#ffffff',
-    strokeWeight: 2,
-  });
+  /**
+   * A moving vehicle gets an arrow pointing where it is going; a stationary one
+   * gets a circle. Heading is meaningless at rest - the GPS reports whatever
+   * direction it last happened to be facing - so showing an arrow then would
+   * be inventing information.
+   */
+  const iconFor = (kind, heading, moving) => {
+    const fillColor = kind === 'unlocked' ? '#d9483b' : kind === 'offline' ? '#55666f' : '#2f9e6e';
+    return moving
+      ? {
+          path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+          scale: 5.5,
+          rotation: heading ?? 0,
+          fillColor,
+          fillOpacity: 1,
+          strokeColor: '#ffffff',
+          strokeWeight: 1.5,
+        }
+      : {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 11,
+          fillColor,
+          fillOpacity: 1,
+          strokeColor: '#ffffff',
+          strokeWeight: 2,
+        };
+  };
 
   return {
     provider: 'google',
@@ -108,7 +128,7 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
     setTheme(next) {
       map.setOptions({ styles: next === 'light' ? null : GOOGLE_DARK });
     },
-    setMarker(id, lat, lon, { title, kind }) {
+    setMarker(id, lat, lon, { title, kind, heading, moving }) {
       let marker = markers.get(id);
       if (!marker) {
         marker = new google.maps.Marker({ map, position: { lat, lng: lon }, title });
@@ -118,7 +138,7 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
         marker.setPosition({ lat, lng: lon });
         marker.setTitle(title);
       }
-      marker.setIcon(iconFor(kind));
+      marker.setIcon(iconFor(kind, heading, moving));
     },
     removeMarker(id) {
       const marker = markers.get(id);
@@ -126,6 +146,60 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
         marker.setMap(null);
         markers.delete(id);
       }
+    },
+
+    /** Destination pin, its arrival radius, and a line from the vehicle. */
+    setDestination(id, lat, lon, { radiusM, label, from }) {
+      let d = destinations.get(id);
+      if (!d) {
+        d = {
+          marker: new google.maps.Marker({
+            map,
+            position: { lat, lng: lon },
+            title: label,
+            icon: {
+              path: google.maps.SymbolPath.BACKWARD_CLOSED_ARROW,
+              scale: 5,
+              fillColor: '#d9922b',
+              fillOpacity: 1,
+              strokeColor: '#ffffff',
+              strokeWeight: 1.5,
+            },
+            zIndex: 1,
+          }),
+          circle: new google.maps.Circle({
+            map,
+            center: { lat, lng: lon },
+            radius: radiusM,
+            strokeColor: '#d9922b',
+            strokeOpacity: 0.8,
+            strokeWeight: 1.5,
+            fillColor: '#d9922b',
+            fillOpacity: 0.12,
+          }),
+          line: new google.maps.Polyline({
+            map,
+            strokeColor: '#d9922b',
+            strokeOpacity: 0,
+            // Dashed, so it reads as "distance to go" rather than a route.
+            icons: [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 0.7, scale: 3 }, offset: '0', repeat: '12px' }],
+          }),
+        };
+        destinations.set(id, d);
+      }
+      d.marker.setPosition({ lat, lng: lon });
+      d.marker.setTitle(label);
+      d.circle.setCenter({ lat, lng: lon });
+      d.circle.setRadius(radiusM);
+      d.line.setPath(from ? [{ lat: from.lat, lng: from.lon }, { lat, lng: lon }] : []);
+    },
+    clearDestinations() {
+      for (const d of destinations.values()) {
+        d.marker.setMap(null);
+        d.circle.setMap(null);
+        d.line.setMap(null);
+      }
+      destinations.clear();
     },
     flyTo(lat, lon, zoom = 15) {
       map.panTo({ lat, lng: lon });
@@ -175,12 +249,12 @@ function createOsmMap(container, onMarkerClick) {
     // nothing to restyle. The toggle hides itself rather than doing nothing.
     supportsTheme: false,
     setTheme() {},
-    setMarker(id, lat, lon, { title, kind }) {
+    setMarker(id, lat, lon, { title, kind, heading, moving }) {
       let marker = markers.get(id);
       if (!marker) {
         const el = document.createElement('div');
         el.className = 'truck-marker';
-        el.textContent = '🚛';
+        el.innerHTML = '<span class="truck-arrow">➤</span>';
         el.addEventListener('click', () => onMarkerClick(id));
         marker = new maplibregl.Marker({ element: el }).setLngLat([lon, lat]).addTo(map);
         markers.set(id, marker);
@@ -190,7 +264,63 @@ function createOsmMap(container, onMarkerClick) {
       const el = marker.getElement();
       el.classList.toggle('unlocked', kind === 'unlocked');
       el.classList.toggle('offline', kind === 'offline');
+      el.classList.toggle('moving', !!moving);
       el.title = title;
+      // The glyph points east at rest, so subtract 90 to align with bearing.
+      el.querySelector('.truck-arrow').style.transform = moving
+        ? `rotate(${(heading ?? 0) - 90}deg)`
+        : 'none';
+    },
+
+    /**
+     * MapLibre has no circle geometry, so approximate one as a polygon. 64
+     * points is indistinguishable from a circle at any zoom an operator uses.
+     */
+    setDestination(id, lat, lon, { radiusM, from }) {
+      const ring = [];
+      for (let i = 0; i <= 64; i++) {
+        const angle = (i / 64) * 2 * Math.PI;
+        const dLat = (radiusM * Math.cos(angle)) / 111320;
+        const dLon = (radiusM * Math.sin(angle)) / (111320 * Math.cos((lat * Math.PI) / 180));
+        ring.push([lon + dLon, lat + dLat]);
+      }
+
+      const data = {
+        type: 'FeatureCollection',
+        features: [
+          { type: 'Feature', geometry: { type: 'Polygon', coordinates: [ring] } },
+          ...(from
+            ? [{
+                type: 'Feature',
+                geometry: { type: 'LineString', coordinates: [[from.lon, from.lat], [lon, lat]] },
+              }]
+            : []),
+        ],
+      };
+
+      if (map.getSource('destinations')) {
+        map.getSource('destinations').setData(data);
+        return;
+      }
+      map.addSource('destinations', { type: 'geojson', data });
+      map.addLayer({
+        id: 'destination-fill',
+        type: 'fill',
+        source: 'destinations',
+        filter: ['==', ['geometry-type'], 'Polygon'],
+        paint: { 'fill-color': '#d9922b', 'fill-opacity': 0.12 },
+      });
+      map.addLayer({
+        id: 'destination-line',
+        type: 'line',
+        source: 'destinations',
+        paint: { 'line-color': '#d9922b', 'line-width': 1.5, 'line-dasharray': [2, 2] },
+      });
+    },
+    clearDestinations() {
+      if (map.getSource('destinations')) {
+        map.getSource('destinations').setData({ type: 'FeatureCollection', features: [] });
+      }
     },
     removeMarker(id) {
       const marker = markers.get(id);
