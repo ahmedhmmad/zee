@@ -199,6 +199,103 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     };
   });
 
+  // --- Arrival unlocks ----------------------------------------------------
+
+  app.get('/api/devices/:id/arrivals', async (req, reply) => {
+    const id = deviceIdOf(req, reply);
+    if (!id) return reply;
+    const { rows } = await pool.query(
+      `SELECT a.id, a.name, a.reason, a.radius_m, a.is_armed, a.created_by,
+              a.created_at, a.expires_at, a.triggered_at, a.triggered_distance_m,
+              a.triggered_command_id,
+              ST_Y(a.location::geometry) AS latitude,
+              ST_X(a.location::geometry) AS longitude,
+              -- How far the vehicle is right now, so the operator can see it
+              -- approaching rather than guessing.
+              CASE WHEN s.location IS NOT NULL
+                   THEN round(ST_Distance(a.location, s.location)::numeric, 0)
+              END AS current_distance_m
+         FROM arrival_unlocks a
+         LEFT JOIN device_state s ON s.device_id = a.device_id
+        WHERE a.device_id = $1
+        ORDER BY a.is_armed DESC, a.created_at DESC
+        LIMIT 20`,
+      [id],
+    );
+    return rows;
+  });
+
+  /**
+   * Arm an automatic unlock at a point.
+   *
+   * This is the one place a lock opens with no human deciding in the moment,
+   * so it carries the same mandatory reason as a manual unlock, a bounded
+   * radius, and an expiry.
+   */
+  app.post('/api/devices/:id/arrivals', async (req, reply) => {
+    const id = deviceIdOf(req, reply);
+    if (!id) return reply;
+
+    const body = (req.body ?? {}) as {
+      name?: string;
+      latitude?: number;
+      longitude?: number;
+      radiusM?: number;
+      reason?: string;
+      expiresInHours?: number;
+    };
+
+    const lat = Number(body.latitude);
+    const lon = Number(body.longitude);
+    if (!Number.isFinite(lat) || Math.abs(lat) > 90 || !Number.isFinite(lon) || Math.abs(lon) > 180) {
+      return reply.code(400).send({ error: 'invalid_coordinates' });
+    }
+    if (!body.reason || body.reason.trim().length < 3) {
+      return reply.code(400).send({ error: 'reason_required' });
+    }
+
+    // Below ~30m the vehicle would often pass through without a position
+    // landing inside; above 5km it stops meaning "arrived" at all.
+    const radius = Math.min(Math.max(Math.round(Number(body.radiusM) || 100), 30), 5000);
+    const hours = Math.min(Math.max(Number(body.expiresInHours) || 12, 1), 72);
+    const name = (body.name ?? '').trim() || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO arrival_unlocks (device_id, name, location, radius_m, reason, created_by, expires_at)
+       VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6, $7,
+               now() + ($8 || ' hours')::interval)
+       RETURNING id`,
+      [id, name, lon, lat, radius, body.reason.trim(), actorOf(req), hours],
+    );
+
+    await audit(req, 'arrival_unlock_armed', id, {
+      arrivalId: rows[0]!.id,
+      name,
+      latitude: lat,
+      longitude: lon,
+      radiusM: radius,
+      reason: body.reason.trim(),
+      expiresInHours: hours,
+    });
+
+    return { id: rows[0]!.id, name, radiusM: radius, expiresInHours: hours };
+  });
+
+  /** Disarm. Kept as a row so the audit trail still shows it existed. */
+  app.delete('/api/devices/:id/arrivals/:arrivalId', async (req, reply) => {
+    const id = deviceIdOf(req, reply);
+    if (!id) return reply;
+    const arrivalId = Number((req.params as { arrivalId?: string }).arrivalId);
+    if (!Number.isInteger(arrivalId)) return reply.code(400).send({ error: 'invalid_id' });
+
+    const { rowCount } = await pool.query(
+      `UPDATE arrival_unlocks SET is_armed = false WHERE id = $1 AND device_id = $2 AND is_armed`,
+      [arrivalId, id],
+    );
+    await audit(req, 'arrival_unlock_disarmed', id, { arrivalId });
+    return { disarmed: rowCount === 1 };
+  });
+
   app.get('/api/audit', async () => {
     const { rows } = await pool.query(
       `SELECT at, actor, action, device_id, command_id, detail

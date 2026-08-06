@@ -95,6 +95,45 @@
 
       <button id="unlock-btn" class="btn btn-danger btn-block">فتح القفل عن بُعد</button>
 
+      <h3>الفتح التلقائي عند الوصول</h3>
+      <form id="arrival-form" class="arrival-form">
+        <label for="arrival-coords">الإحداثيات (خط العرض، خط الطول)</label>
+        <input type="text" id="arrival-coords" required
+               placeholder="32.85255, 13.07818" class="ltr-input" />
+
+        <div class="arrival-row">
+          <div>
+            <label for="arrival-radius">نطاق الوصول</label>
+            <select id="arrival-radius">
+              <option value="50">50 متر</option>
+              <option value="100" selected>100 متر</option>
+              <option value="250">250 متر</option>
+              <option value="500">500 متر</option>
+            </select>
+          </div>
+          <div>
+            <label for="arrival-expiry">مدة الصلاحية</label>
+            <select id="arrival-expiry">
+              <option value="6">6 ساعات</option>
+              <option value="12" selected>12 ساعة</option>
+              <option value="24">24 ساعة</option>
+            </select>
+          </div>
+        </div>
+
+        <label for="arrival-reason">سبب الفتح (إلزامي)</label>
+        <input type="text" id="arrival-reason" required minlength="3"
+               placeholder="مثال: تفريغ الحمولة في محطة الوقود" />
+
+        <p class="warn">
+          سيُفتح القفل <strong>تلقائياً وبدون تأكيد</strong> عند وصول المركبة إلى هذه
+          النقطة. يُلغى الأمر بعد تنفيذه مرة واحدة أو عند انتهاء مدة الصلاحية.
+        </p>
+
+        <button type="submit" class="btn btn-danger btn-block">تفعيل الفتح عند الوصول</button>
+      </form>
+      <ul id="arrival-list" class="feed"></ul>
+
       <h3>الأوامر الأخيرة</h3>
       <ul id="command-list" class="feed"></ul>
 

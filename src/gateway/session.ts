@@ -10,6 +10,7 @@ import type { Socket } from 'node:net';
 import { Framer, decodeFrame, encode, type DecodedFrame } from '../protocol/index.ts';
 import { config } from '../config.ts';
 import * as store from './store.ts';
+import { checkArrivalUnlocks } from './arrivals.ts';
 
 export interface SessionEvents {
   onIdentified(deviceId: string, session: DeviceSession): void;
@@ -136,6 +137,13 @@ export class DeviceSession {
         // Ack regardless: the device re-sends until acknowledged, and a
         // duplicate we already hold is still a frame it wants cleared.
         this.send(encode.ackData(frame.serial));
+        // Only act on positions we have not seen before, so a duplicate
+        // delivery cannot re-trigger an arrival.
+        if (isNew) {
+          for (const hit of await checkArrivalUnlocks(frame)) {
+            this.log(`ARRIVAL "${hit.name}" — ${hit.distanceM}m — unlock queued (cmd ${hit.commandId})`);
+          }
+        }
         if (isNew && frame.isAlarm) {
           await store.audit('alarm_received', frame.deviceId, {
             alarms: Object.entries(frame.status).filter(([k, v]) => v && k.endsWith('Alarm')).map(([k]) => k),

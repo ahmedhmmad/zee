@@ -359,3 +359,11 @@ select {
 /* The event log is the audit record, so give it room to breathe. */
 #event-list li { padding: .65rem .8rem; }
 #event-list .when { margin-block-start: .2rem; }
+
+/* --- Arrival unlock form -------------------------------------------------- */
+
+.arrival-form { margin-block-end: 1rem; }
+.arrival-row { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; }
+.ltr-input { direction: ltr; text-align: start; }
+.btn-xs { font-size: .72rem; padding: .2rem .55rem; }
+#arrival-list .row { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }

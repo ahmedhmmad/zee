@@ -391,7 +391,7 @@ async function renderDetail() {
     : '';
 
   $('unlock-btn').disabled = false;
-  await Promise.all([loadCommands(d.device_id), loadEvents(d.device_id)]);
+  await Promise.all([loadCommands(d.device_id), loadEvents(d.device_id), loadArrivals(d.device_id)]);
 }
 
 async function loadCommands(deviceId) {
@@ -539,6 +539,113 @@ $('unlock-form').addEventListener('submit', async (e) => {
     loadCommands(deviceId);
   } catch {
     toast('تعذّر إرسال الأمر', 'bad');
+  }
+});
+
+// --- Arrival unlocks --------------------------------------------------------
+
+/**
+ * Accept whatever an operator pastes: "32.85255, 13.07818" from Google Maps,
+ * space-separated, or with stray parentheses. Getting this wrong sends a
+ * tanker's unlock point somewhere else entirely, so be liberal in parsing and
+ * strict in validating.
+ */
+function parseCoords(text) {
+  const nums = String(text)
+    .replace(/[()]/g, ' ')
+    .split(/[,\s]+/)
+    .map((s) => Number(s))
+    .filter((n) => Number.isFinite(n));
+
+  if (nums.length !== 2) return null;
+  const [latitude, longitude] = nums;
+  if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return null;
+  return { latitude, longitude };
+}
+
+async function loadArrivals(deviceId) {
+  const list = $('arrival-list');
+  try {
+    const arrivals = await api(`/api/devices/${deviceId}/arrivals`);
+    const armed = arrivals.filter((a) => a.is_armed);
+    const recent = arrivals.filter((a) => !a.is_armed).slice(0, 3);
+
+    if (!armed.length && !recent.length) {
+      list.innerHTML = '<li class="empty">لا توجد نقاط فتح تلقائي</li>';
+      return;
+    }
+
+    list.innerHTML = [...armed, ...recent]
+      .map((a) => {
+        const notes = [`نطاق ${a.radius_m} م`, `السبب: ${a.reason}`];
+        if (a.is_armed) {
+          if (a.current_distance_m != null) {
+            notes.push(
+              Number(a.current_distance_m) <= a.radius_m
+                ? 'المركبة داخل النطاق'
+                : `المسافة الحالية ${formatDistance(a.current_distance_m)}`,
+            );
+          }
+          notes.push(`ينتهي ${fmtDateTime(a.expires_at)}`);
+        } else if (a.triggered_at) {
+          notes.push(`نُفِّذ ${fmtDateTime(a.triggered_at)} على بُعد ${a.triggered_distance_m} م`);
+        } else {
+          notes.push('أُلغي');
+        }
+
+        return `<li class="${a.is_armed ? 'pending' : a.triggered_at ? 'ok' : ''}">
+          <div class="row">
+            <strong>${escapeHtml(a.name)}</strong>
+            ${a.is_armed ? `<button class="btn btn-ghost btn-xs" data-disarm="${a.id}">إلغاء</button>` : ''}
+          </div>
+          <div class="muted">${notes.map(escapeHtml).join(' · ')}</div>
+        </li>`;
+      })
+      .join('');
+
+    for (const btn of list.querySelectorAll('[data-disarm]')) {
+      btn.addEventListener('click', async () => {
+        await api(`/api/devices/${deviceId}/arrivals/${btn.dataset.disarm}`, { method: 'DELETE' });
+        toast('تم إلغاء الفتح التلقائي', 'ok');
+        loadArrivals(deviceId);
+      });
+    }
+  } catch {
+    list.innerHTML = '<li class="empty">تعذّر التحميل</li>';
+  }
+}
+
+const formatDistance = (m) =>
+  Number(m) >= 1000 ? `${(Number(m) / 1000).toFixed(1)} كم` : `${Math.round(Number(m))} م`;
+
+$('arrival-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const deviceId = state.selectedId;
+  if (!deviceId) return;
+
+  const coords = parseCoords($('arrival-coords').value);
+  if (!coords) {
+    toast('الإحداثيات غير صالحة — مثال: 32.85255, 13.07818', 'bad');
+    return;
+  }
+
+  try {
+    await api(`/api/devices/${deviceId}/arrivals`, {
+      method: 'POST',
+      body: JSON.stringify({
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        radiusM: Number($('arrival-radius').value),
+        expiresInHours: Number($('arrival-expiry').value),
+        reason: $('arrival-reason').value.trim(),
+      }),
+    });
+    $('arrival-coords').value = '';
+    $('arrival-reason').value = '';
+    toast('تم تفعيل الفتح التلقائي عند الوصول', 'ok');
+    loadArrivals(deviceId);
+  } catch {
+    toast('تعذّر تفعيل الفتح التلقائي', 'bad');
   }
 });
 
