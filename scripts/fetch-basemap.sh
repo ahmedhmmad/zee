@@ -35,6 +35,16 @@ if [ ! -x ./pmtiles ]; then
   chmod +x pmtiles
 fi
 
+# Re-extracting transfers ~370 MB, so skip it when the basemap already exists.
+# Pass --refresh to rebuild against a newer planet.
+if [ -s libya.pmtiles ] && [ "${2:-}" != "--refresh" ]; then
+  echo "==> basemap already present ($(du -h libya.pmtiles | cut -f1)), skipping extract"
+  echo "    pass --refresh as the second argument to rebuild"
+  SKIP_EXTRACT=1
+fi
+
+if [ -z "${SKIP_EXTRACT:-}" ]; then
+
 # Protomaps publishes daily planet builds but serves no directory index, so
 # probe backwards from today until one responds. Builds usually lag a day or
 # two, and occasionally more.
@@ -63,6 +73,8 @@ echo "==> extracting Libya (bbox $BBOX) — this takes a few minutes"
 ./pmtiles extract "https://build.protomaps.com/${BUILD}" libya.pmtiles --bbox="${BBOX}"
 
 ls -lh libya.pmtiles
+
+fi  # SKIP_EXTRACT
 
 # --- Glyphs -----------------------------------------------------------------
 #
