@@ -107,11 +107,16 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     const id = deviceIdOf(req, reply);
     if (!id) return reply;
     const { rows } = await pool.query(
-      `SELECT id, reported_at, event_source_name, unlock_allowed,
-              refused_outside_fence, rfid_card, wrong_password_count, command_id
-         FROM lock_events
-        WHERE device_id = $1
-        ORDER BY reported_at DESC
+      // Join the causing command so the log can say who authorised an unlock
+      // and why, rather than only that one happened.
+      `SELECT le.id, le.reported_at, le.received_at, le.event_source_name,
+              le.unlock_allowed, le.refused_outside_fence, le.rfid_card,
+              le.wrong_password_count, le.command_id,
+              c.requested_by, c.reason
+         FROM lock_events le
+         LEFT JOIN commands c ON c.id = le.command_id
+        WHERE le.device_id = $1
+        ORDER BY le.reported_at DESC
         LIMIT 100`,
       [id],
     );

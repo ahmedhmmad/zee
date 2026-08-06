@@ -355,3 +355,7 @@ select {
   line-height: 1.7;
   color: var(--muted);
 }
+
+/* The event log is the audit record, so give it room to breathe. */
+#event-list li { padding: .65rem .8rem; }
+#event-list .when { margin-block-start: .2rem; }

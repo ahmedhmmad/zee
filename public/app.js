@@ -43,6 +43,18 @@ function fmtAgo(iso) {
   return `منذ ${Math.floor(seconds / 86400)} يوم`;
 }
 
+/** Anything that leaves the lock open, as opposed to closing it. */
+const isOpening = (e) =>
+  e.unlock_allowed && e.event_source_name !== 'auto_locked' && e.event_source_name !== 'rope_pulled_out';
+
+function formatDuration(seconds) {
+  const s = Math.round(seconds);
+  if (s < 60) return `${s} ثانية`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} دقيقة`;
+  return `${Math.floor(m / 60)} ساعة و${m % 60} دقيقة`;
+}
+
 const EVENT_NAMES = {
   rfid_authorized: 'بطاقة RFID مصرّح بها',
   rfid_illegal: 'بطاقة RFID غير مصرّح بها',
@@ -473,25 +485,49 @@ async function loadEvents(deviceId) {
       list.innerHTML = '<li class="empty">لا توجد أحداث</li>';
       return;
     }
+    // Events arrive newest-first. Walk forward to find, for each unlock, the
+    // next locking event after it - so the log can say how long the tanker was
+    // actually open, which is the number that matters in an investigation.
+    const sealedAfter = new Map();
+    for (let i = 0; i < events.length; i++) {
+      const e = events[i];
+      if (!isOpening(e)) continue;
+      for (let j = i - 1; j >= 0; j--) {
+        if (events[j].event_source_name === 'auto_locked') {
+          sealedAfter.set(e.id, (new Date(events[j].reported_at) - new Date(e.reported_at)) / 1000);
+          break;
+        }
+      }
+    }
+
     list.innerHTML = events
-      .slice(0, 12)
+      .slice(0, 20)
       .map((e) => {
         const refused = e.refused_outside_fence;
-        // An auto-lock is neither success nor failure, just a state change.
         const neutral = e.event_source_name === 'auto_locked';
         const cls = neutral ? '' : refused || !e.unlock_allowed ? 'bad' : 'ok';
 
         const notes = [];
+        if (e.command_id && e.requested_by) {
+          notes.push(`بأمر من ${e.requested_by}`);
+          if (e.reason) notes.push(`السبب: ${e.reason}`);
+        }
         if (refused) notes.push('رُفض خارج المنطقة المسموحة');
         if (e.wrong_password_count > 0) notes.push(`محاولات خاطئة: ${e.wrong_password_count}`);
-        // Which card opened it is the whole point of an audit trail.
         if (e.rfid_card) notes.push(`البطاقة ${e.rfid_card}`);
-        if (e.command_id) notes.push('بأمر من المنظومة');
+
+        const open = sealedAfter.get(e.id);
+        if (open != null) notes.push(`ظل مفتوحاً ${formatDuration(open)}`);
+
+        // Flash-cached reports arrive minutes late; say so where it is large,
+        // otherwise the log looks like it is lagging for no reason.
+        const lag = (new Date(e.received_at) - new Date(e.reported_at)) / 1000;
+        const lagNote = lag > 90 ? ` · وصل بعد ${formatDuration(lag)}` : '';
 
         return `<li class="${cls}">
-          <div>${EVENT_NAMES[e.event_source_name] ?? e.event_source_name}</div>
+          <div><strong>${EVENT_NAMES[e.event_source_name] ?? e.event_source_name}</strong></div>
           ${notes.length ? `<div class="muted">${notes.map(escapeHtml).join(' · ')}</div>` : ''}
-          <div class="when">${fmtDateTime(e.reported_at)}</div>
+          <div class="when">${fmtDateTime(e.reported_at)}${lagNote}</div>
         </li>`;
       })
       .join('');
