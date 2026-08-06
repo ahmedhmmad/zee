@@ -29,7 +29,10 @@ export function decodeAsciiFrame(frame: Buffer): DecodedFrame {
 
   const deviceId = parts[0] ?? '';
   if (!/^\d{10}$/.test(deviceId)) {
-    return unknown(null, `ascii frame has no valid 10-digit device id: ${text.slice(0, 40)}`, frame);
+    // Printable-only preview: this string reaches a Postgres text column, and
+    // scanner payloads are arbitrary bytes. A NUL aborts the whole insert.
+    const preview = text.slice(0, 40).replace(/[^\x20-\x7e]/g, '.');
+    return unknown(null, `ascii frame has no valid 10-digit device id: ${preview}`, frame);
   }
 
   // WLNET can appear at varying field positions depending on the wrapper the

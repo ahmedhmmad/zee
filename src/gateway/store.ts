@@ -11,17 +11,51 @@ export async function isKnownDevice(deviceId: string): Promise<boolean> {
   return rowCount === 1;
 }
 
+/** Anonymous probe traffic, counted rather than stored. */
+let anonymousRejects = 0;
+
+export function anonymousRejectCount(): number {
+  return anonymousRejects;
+}
+
+/**
+ * Record a frame we refused.
+ *
+ * Only frames carrying a device ID are persisted. Those are the ones that
+ * matter: a real lock missing from the allowlist, or an ID changing mid
+ * session. Everything else is internet background noise - port scanners
+ * probing 10001 - and storing each probe would fill a disk-constrained box
+ * with data nobody will ever read. Those are counted instead.
+ */
 export async function recordRejectedFrame(
   deviceId: string | null,
   reason: string,
   remoteIp: string | null,
   raw: Buffer | string,
 ): Promise<void> {
+  if (!deviceId) {
+    anonymousRejects++;
+    // Periodic heartbeat so probing is still visible without the volume.
+    if (anonymousRejects % 100 === 0) {
+      console.log(`[gateway] ${anonymousRejects} unidentified frames rejected since start`);
+    }
+    return;
+  }
+
   const hex = typeof raw === 'string' ? Buffer.from(raw, 'latin1').toString('hex') : raw.toString('hex');
   await pool.query(
     'INSERT INTO rejected_frames (device_id, reason, remote_ip, raw_hex) VALUES ($1, $2, $3, $4)',
-    [deviceId, reason, remoteIp, hex.slice(0, 4000)],
+    [deviceId, sanitise(reason), remoteIp, hex.slice(0, 4000)],
   );
+}
+
+/**
+ * Strip anything Postgres will not accept in a text column. Frame contents are
+ * arbitrary bytes, and a single NUL aborts the insert - which previously took
+ * down the whole rejection path with a UTF8 encoding error.
+ */
+function sanitise(s: string): string {
+  return s.replace(/[^\x20-\x7e]/g, '.').slice(0, 500);
 }
 
 /**
