@@ -659,11 +659,38 @@ const formatDistance = (m) =>
  * destination says where the truck should end up, but the trail shows where it
  * has been - which is what reveals an unscheduled stop or a detour.
  */
+/** Metres between two coordinates. Flat-earth approximation, fine at this scale. */
+function metresBetween([lat1, lon1], [lat2, lon2]) {
+  const dLat = (lat2 - lat1) * 111320;
+  const dLon = (lon2 - lon1) * 111320 * Math.cos((lat1 * Math.PI) / 180);
+  return Math.hypot(dLat, dLon);
+}
+
+/**
+ * Drop fixes that have barely moved.
+ *
+ * A parked vehicle still reports every 60 seconds and each fix wanders 10-20m,
+ * so ten minutes stationary draws a scribble that looks like erratic driving.
+ * Collapsing anything within 25m of the last kept point removes the scribble
+ * without losing the shape of the journey - and without hiding the stop, since
+ * the gap in the line still shows it.
+ */
+function dropStationaryDrift(points, minMetres = 25) {
+  const kept = [];
+  for (const p of points) {
+    if (!kept.length || metresBetween(kept[kept.length - 1], p) >= minMetres) kept.push(p);
+  }
+  // Always keep the final fix, so the trail ends where the vehicle actually is.
+  const last = points[points.length - 1];
+  if (last && kept[kept.length - 1] !== last) kept.push(last);
+  return kept;
+}
+
 async function loadTrail(deviceId) {
   if (!state.map?.setTrail) return;
   try {
     const points = await api(`/api/devices/${deviceId}/track?hours=12`);
-    state.map.setTrail(points.map((p) => [p.latitude, p.longitude]));
+    state.map.setTrail(dropStationaryDrift(points.map((p) => [p.latitude, p.longitude])));
   } catch {
     state.map.clearTrail?.();
   }
