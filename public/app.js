@@ -263,7 +263,7 @@ function syncMarkers() {
 
     const el = marker.getElement();
     el.classList.toggle('unlocked', device.motor_locked === false);
-    el.classList.toggle('offline', !device.is_connected);
+    el.classList.toggle('offline', connectionState(device) === 'offline');
     el.title = device.name;
   }
 }
@@ -291,7 +291,15 @@ function renderDeviceList() {
   for (const d of visible) {
     const li = document.createElement('li');
     li.className = 'device-item';
-    li.classList.add(!d.is_connected ? 'is-offline' : d.motor_locked === false ? 'is-unlocked' : 'is-locked');
+    // Only genuine loss of contact greys a vehicle out. A sleeping device
+    // still shows its lock state, because that is what operators care about.
+    li.classList.add(
+      connectionState(d) === 'offline'
+        ? 'is-offline'
+        : d.motor_locked === false
+          ? 'is-unlocked'
+          : 'is-locked',
+    );
     if (d.device_id === state.selectedId) li.classList.add('selected');
 
     li.innerHTML = `
@@ -308,10 +316,35 @@ function renderDeviceList() {
   }
 }
 
+/**
+ * These devices sleep almost all the time — they wake for ten minutes, report,
+ * and drop the socket. So "no socket" is the normal resting state, not a
+ * fault, and saying "disconnected" for it trains operators to ignore the word.
+ *
+ * The RTC wake interval is 30 minutes by default, so anything heard from
+ * inside 45 minutes is behaving normally. Beyond that it is genuinely out of
+ * contact and worth someone's attention.
+ */
+const SLEEP_GRACE_MS = 45 * 60 * 1000;
+
+function connectionState(d) {
+  if (d.is_connected) return 'connected';
+  if (!d.last_seen_at) return 'offline';
+  return Date.now() - new Date(d.last_seen_at) < SLEEP_GRACE_MS ? 'sleeping' : 'offline';
+}
+
 function lockPill(d) {
-  if (!d.is_connected) return '<span class="pill pill-muted">غير متصل</span>';
-  if (d.motor_locked === false) return '<span class="pill pill-danger">مفتوح</span>';
-  return '<span class="pill pill-ok">مقفل</span>';
+  const state = connectionState(d);
+  if (state === 'offline') return '<span class="pill pill-warn">لا اتصال</span>';
+
+  // Lock state is still known while asleep: it is whatever the device last
+  // reported, and the lock does not move on its own.
+  const lock =
+    d.motor_locked === false
+      ? '<span class="pill pill-danger">مفتوح</span>'
+      : '<span class="pill pill-ok">مقفل</span>';
+
+  return state === 'sleeping' ? `${lock} <span class="pill pill-muted">نائم</span>` : lock;
 }
 
 /**
