@@ -50,7 +50,7 @@ function loadScript(src) {
 
 // --- Google ----------------------------------------------------------------
 
-async function createGoogleMap(container, apiKey, onMarkerClick) {
+async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
   // With loading=async the script resolves before the library is usable, so
   // wait on Google's own callback rather than the script's load event.
   const ready = new Promise((resolve) => {
@@ -71,7 +71,8 @@ async function createGoogleMap(container, apiKey, onMarkerClick) {
     zoom: 11,
     minZoom: 5,
     restriction: { latLngBounds: LIBYA_BOUNDS, strictBounds: false },
-    styles: GOOGLE_DARK,
+    // null restores Google's own colours; the array applies our dark theme.
+    styles: theme === 'light' ? null : GOOGLE_DARK,
     mapTypeControl: true,
     mapTypeControlOptions: {
       // Satellite is genuinely useful here: depot layouts, gates, tank
@@ -103,6 +104,10 @@ async function createGoogleMap(container, apiKey, onMarkerClick) {
 
   return {
     provider: 'google',
+    supportsTheme: true,
+    setTheme(next) {
+      map.setOptions({ styles: next === 'light' ? null : GOOGLE_DARK });
+    },
     setMarker(id, lat, lon, { title, kind }) {
       let marker = markers.get(id);
       if (!marker) {
@@ -166,6 +171,10 @@ function createOsmMap(container, onMarkerClick) {
 
   return {
     provider: 'osm',
+    // Raster labels and colours are baked into the tile images, so there is
+    // nothing to restyle. The toggle hides itself rather than doing nothing.
+    supportsTheme: false,
+    setTheme() {},
     setMarker(id, lat, lon, { title, kind }) {
       let marker = markers.get(id);
       if (!marker) {
@@ -198,10 +207,10 @@ function createOsmMap(container, onMarkerClick) {
 }
 
 /** Google when a key is configured, OpenStreetMap otherwise. */
-export async function createMap(container, apiKey, onMarkerClick) {
+export async function createMap(container, apiKey, onMarkerClick, theme = 'dark') {
   if (apiKey) {
     try {
-      return await createGoogleMap(container, apiKey, onMarkerClick);
+      return await createGoogleMap(container, apiKey, onMarkerClick, theme);
     } catch (err) {
       // A billing problem or an unreachable Google should degrade to a working
       // map, not to a blank panel.

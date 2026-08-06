@@ -156,12 +156,37 @@ $('logout').addEventListener('click', async () => {
 
 // --- Map --------------------------------------------------------------------
 
+// Remembered per browser: an operator in a control room and one checking on a
+// phone outdoors want opposite answers, and neither should have to re-choose.
+const THEME_KEY = 'zee.mapTheme';
+const mapTheme = () => localStorage.getItem(THEME_KEY) ?? 'dark';
+
+function renderThemeButton() {
+  const btn = $('map-theme');
+  btn.hidden = !state.map?.supportsTheme;
+  btn.textContent = mapTheme() === 'dark' ? '🌙 داكن' : '☀️ فاتح';
+}
+
+$('map-theme').addEventListener('click', () => {
+  const next = mapTheme() === 'dark' ? 'light' : 'dark';
+  localStorage.setItem(THEME_KEY, next);
+  state.map?.setTheme(next);
+  renderThemeButton();
+});
+
 async function initMap() {
   if (state.map) return;
   const { googleMapsApiKey } = await api('/api/config');
   const { createMap } = await import('/map.js');
-  state.map = await createMap(document.getElementById('map'), googleMapsApiKey, selectDevice);
+  state.map = await createMap(
+    document.getElementById('map'),
+    googleMapsApiKey,
+    selectDevice,
+    mapTheme(),
+  );
   console.info(`[map] using ${state.map.provider}`);
+  // Raster tiles cannot be restyled, so the button only exists for Google.
+  renderThemeButton();
 }
 
 /**
