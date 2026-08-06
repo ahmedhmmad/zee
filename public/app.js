@@ -204,6 +204,11 @@ async function initMap() {
     maxZoom: 18,
   });
   state.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-left');
+
+  // app.js is a module, so nothing here is reachable from the console. Expose
+  // the map deliberately: diagnosing a blank basemap without it means guessing.
+  window.__zeeMap = state.map;
+  state.map.on('error', (e) => console.error('[map]', e?.error?.message ?? e));
 }
 
 /**
