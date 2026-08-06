@@ -167,10 +167,22 @@ function rasterStyle() {
 }
 
 /**
- * Prefer the self-hosted vector basemap, which renders labels client-side and
- * so can be forced to Arabic. Falls back to raster if it has not been built.
+ * Raster is the default. The vector basemap is kept behind ?vector=1 but is
+ * NOT production-ready, for two reasons found on real hardware:
+ *
+ *  - Arabic renders as isolated, left-to-right letters. MapLibre needs the
+ *    RTL text plugin for Arabic shaping and bidi, which is not wired up.
+ *  - Tiles intermittently fail to parse ("Unimplemented type: 4") in Chrome
+ *    even though the archive, byte ranges and decompression all verify
+ *    correct when fetched directly.
+ *
+ * Raster labels each country in its own language, but the map is bounded to
+ * Libya, so in practice everything on screen is Arabic anyway - which was the
+ * actual requirement.
  */
 async function resolveStyle() {
+  if (!new URLSearchParams(location.search).has('vector')) return rasterStyle();
+
   try {
     const head = await fetch('/basemap/libya.pmtiles', { method: 'HEAD' });
     if (!head.ok) throw new Error('no basemap');
