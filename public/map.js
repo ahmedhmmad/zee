@@ -51,11 +51,20 @@ function loadScript(src) {
 // --- Google ----------------------------------------------------------------
 
 async function createGoogleMap(container, apiKey, onMarkerClick) {
+  // With loading=async the script resolves before the library is usable, so
+  // wait on Google's own callback rather than the script's load event.
+  const ready = new Promise((resolve) => {
+    window.__gmapsReady = resolve;
+  });
+
   // `language=ar` gives Arabic labels; `region=LY` biases place names and
-  // borders to Libyan usage.
+  // borders to Libyan usage. `loading=async` is Google's recommended pattern
+  // and avoids blocking the parser while the library downloads.
   await loadScript(
-    `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&language=ar&region=LY`,
+    `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}` +
+      '&language=ar&region=LY&loading=async&callback=__gmapsReady',
   );
+  await ready;
 
   const map = new google.maps.Map(container, {
     center: TRIPOLI,
@@ -75,6 +84,14 @@ async function createGoogleMap(container, apiKey, onMarkerClick) {
 
   const markers = new Map();
 
+  /**
+   * google.maps.Marker is deprecated in favour of AdvancedMarkerElement, but
+   * kept deliberately: AdvancedMarkerElement requires a cloud-configured Map
+   * ID, and setting `mapId` makes Google ignore the inline `styles` above -
+   * so the dark theme would have to be rebuilt in the Cloud console instead.
+   * Google give at least 12 months notice before removal, so this is a
+   * migration to make when there is a reason, not a fire.
+   */
   const iconFor = (kind) => ({
     path: google.maps.SymbolPath.CIRCLE,
     scale: 11,
