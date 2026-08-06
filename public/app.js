@@ -146,25 +146,50 @@ $('logout').addEventListener('click', async () => {
 
 // --- Map --------------------------------------------------------------------
 
-function initMap() {
+/**
+ * Raster fallback: OSM tiles proxied through our own origin, since OSM is not
+ * reliably reachable from Libya. Labels are baked into the images in each
+ * country's own language, which is why the vector basemap is preferred.
+ */
+function rasterStyle() {
+  return {
+    version: 8,
+    sources: {
+      osm: {
+        type: 'raster',
+        tiles: [`${location.origin}/api/tiles/{z}/{x}/{y}.png`],
+        tileSize: 256,
+        attribution: '© OpenStreetMap',
+      },
+    },
+    layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
+  };
+}
+
+/**
+ * Prefer the self-hosted vector basemap, which renders labels client-side and
+ * so can be forced to Arabic. Falls back to raster if it has not been built.
+ */
+async function resolveStyle() {
+  try {
+    const head = await fetch('/basemap/libya.pmtiles', { method: 'HEAD' });
+    if (!head.ok) throw new Error('no basemap');
+
+    const { buildStyle } = await import('/map-style.js');
+    // Teach MapLibre to read pmtiles:// URLs as ranged reads of one file.
+    maplibregl.addProtocol('pmtiles', new pmtiles.Protocol().tile);
+    return buildStyle(`${location.origin}/basemap/libya.pmtiles`, '/basemap/glyphs/{fontstack}/{range}.pbf');
+  } catch {
+    console.info('vector basemap unavailable, using raster tiles');
+    return rasterStyle();
+  }
+}
+
+async function initMap() {
   if (state.map) return;
   state.map = new maplibregl.Map({
     container: 'map',
-    style: {
-      version: 8,
-      sources: {
-        osm: {
-          type: 'raster',
-          // Proxied through our own origin: OSM is not reliably reachable
-          // from Libya, and the server-side cache keeps the map working
-          // even when upstream is down.
-          tiles: [`${location.origin}/api/tiles/{z}/{x}/{y}.png`],
-          tileSize: 256,
-          attribution: '© OpenStreetMap',
-        },
-      },
-      layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
-    },
+    style: await resolveStyle(),
     center: TRIPOLI,
     zoom: 11,
     // OSM raster tiles label each country in its own language, so zooming out
@@ -376,10 +401,20 @@ async function loadEvents(deviceId) {
       .slice(0, 12)
       .map((e) => {
         const refused = e.refused_outside_fence;
-        const cls = refused || !e.unlock_allowed ? 'bad' : 'ok';
-        const note = refused ? ' — رُفض خارج المنطقة المسموحة' : '';
+        // An auto-lock is neither success nor failure, just a state change.
+        const neutral = e.event_source_name === 'auto_locked';
+        const cls = neutral ? '' : refused || !e.unlock_allowed ? 'bad' : 'ok';
+
+        const notes = [];
+        if (refused) notes.push('رُفض خارج المنطقة المسموحة');
+        if (e.wrong_password_count > 0) notes.push(`محاولات خاطئة: ${e.wrong_password_count}`);
+        // Which card opened it is the whole point of an audit trail.
+        if (e.rfid_card) notes.push(`البطاقة ${e.rfid_card}`);
+        if (e.command_id) notes.push('بأمر من المنظومة');
+
         return `<li class="${cls}">
-          <div>${EVENT_NAMES[e.event_source_name] ?? e.event_source_name}${note}</div>
+          <div>${EVENT_NAMES[e.event_source_name] ?? e.event_source_name}</div>
+          ${notes.length ? `<div class="muted">${notes.map(escapeHtml).join(' · ')}</div>` : ''}
           <div class="when">${fmtDateTime(e.reported_at)}</div>
         </li>`;
       })
@@ -505,7 +540,7 @@ function escapeHtml(s) {
 async function start() {
   $('login').hidden = true;
   $('app').hidden = false;
-  initMap();
+  await initMap();
   try {
     await refresh();
   } catch {

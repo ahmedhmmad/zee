@@ -7,6 +7,7 @@
  */
 
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
@@ -29,6 +30,30 @@ const app = Fastify({
 await app.register(fastifyCookie, { secret: apiConfig.cookieSecret });
 await app.register(fastifyWebsocket);
 await app.register(fastifyStatic, { root: publicDir });
+
+/**
+ * Self-hosted vector basemap.
+ *
+ * Served with byte-range support because that is how PMTiles works: the client
+ * reads small ranges out of one large file rather than fetching thousands of
+ * tiles. @fastify/static handles Range headers for us.
+ *
+ * Optional — the map falls back to proxied raster tiles when the file is
+ * absent, so a fresh checkout still shows a map before the basemap is built.
+ */
+const basemapDir = process.env.BASEMAP_DIR ?? path.join(here, '..', '..', '.cache', 'basemap');
+if (existsSync(path.join(basemapDir, 'libya.pmtiles'))) {
+  await app.register(fastifyStatic, {
+    root: basemapDir,
+    prefix: '/basemap/',
+    decorateReply: false,
+    // Immutable for a week: the basemap only changes when it is rebuilt.
+    maxAge: '7d',
+  });
+  app.log.info('vector basemap available at /basemap/libya.pmtiles');
+} else {
+  app.log.warn(`no vector basemap at ${basemapDir} — falling back to raster tiles`);
+}
 
 /** Browsers subscribed to live updates. */
 const sockets = new Set<{ send(data: string): void }>();
