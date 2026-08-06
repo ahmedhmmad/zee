@@ -341,6 +341,11 @@ export async function linkEventToCommand(
     eventSourceCode === 4 ? ['unlock_static'] : eventSourceCode === 6 ? ['unlock_dynamic'] : [];
   if (types.length === 0) return;
 
+  // Match on when the DEVICE says the event happened versus when we sent the
+  // command - not on delivery times. P45 reports are cached in flash and
+  // arrive two to five minutes late, so anchoring on arrival misses them
+  // entirely. The device's own reported_at for a platform unlock matches
+  // sent_at to the second.
   await pool.query(
     `UPDATE lock_events le
         SET command_id = c.id
@@ -349,7 +354,9 @@ export async function linkEventToCommand(
         AND c.device_id = $2
         AND c.command_type = ANY($3)
         AND c.status = 'confirmed'
-        AND c.confirmed_at > now() - interval '2 minutes'`,
+        AND c.sent_at IS NOT NULL
+        AND le.reported_at BETWEEN c.sent_at - interval '30 seconds'
+                               AND c.sent_at + interval '2 minutes'`,
     [eventId, deviceId, types],
   );
 }
