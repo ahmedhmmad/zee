@@ -62,9 +62,22 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
              s.positioned, s.speed_kph, s.heading_deg, s.satellites,
              s.battery_percent, s.charging, s.motor_locked, s.rope_inserted,
              s.gsm_signal, s.wake_source, s.active_alarms,
-             s.mileage_km, s.mcc, s.mnc
+             s.mileage_km, s.mcc, s.mnc,
+             -- Most recent lock activity, so the panel can show it without
+             -- the operator having to go hunting through the event log.
+             le.reported_at    AS last_event_at,
+             le.event_source_name AS last_event_source,
+             le.unlock_allowed AS last_event_allowed,
+             le.command_id     AS last_event_command_id
         FROM devices d
         LEFT JOIN device_state s ON s.device_id = d.device_id
+        LEFT JOIN LATERAL (
+          SELECT reported_at, event_source_name, unlock_allowed, command_id
+            FROM lock_events
+           WHERE device_id = d.device_id
+           ORDER BY reported_at DESC
+           LIMIT 1
+        ) le ON true
        WHERE d.is_active
        ORDER BY d.name`);
     return rows;

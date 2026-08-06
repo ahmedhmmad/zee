@@ -412,6 +412,12 @@ async function renderDetail() {
   $('d-rope').textContent = d.rope_inserted == null ? '—' : d.rope_inserted ? 'مُدخَل' : 'مسحوب';
   $('d-mileage').textContent = d.mileage_km != null ? `${d.mileage_km} كم` : '—';
   $('d-carrier').textContent = carrierLabel(d);
+  // Lock events arrive 2-5 minutes late, cached in device flash, so this can
+  // legitimately lag the live status above. Show the delay rather than hide it.
+  $('d-last-event').textContent = d.last_event_at
+    ? `${EVENT_NAMES[d.last_event_source] ?? d.last_event_source} · ${fmtDateTime(d.last_event_at)}` +
+      (d.last_event_command_id ? ' · بأمر من المنظومة' : '')
+    : 'لا يوجد';
   $('d-devid').textContent = d.device_id;
   $('d-model').textContent = d.model ?? '—';
   $('d-imei').textContent = d.imei ?? '—';
