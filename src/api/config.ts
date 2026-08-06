@@ -25,6 +25,17 @@ if (authDisabled) {
 }
 
 export const apiConfig = {
+  /**
+   * Google Maps browser key. Optional — without it the UI falls back to the
+   * proxied OpenStreetMap basemap.
+   *
+   * Google's terms forbid proxying or caching their tiles, so unlike OSM this
+   * cannot be served through our own gateway: each browser talks to Google
+   * directly. Restrict the key by HTTP referrer in the Cloud console, since a
+   * browser key is by nature public.
+   */
+  googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY ?? '',
+
   port: Number(process.env.API_PORT ?? 3333),
   // Bind loopback only: Nginx is the sole ingress, so the app must not be
   // reachable directly even if a firewall rule is wrong.

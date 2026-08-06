@@ -52,6 +52,11 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
   // tiles should not be an open proxy for anyone who finds the URL.
   await app.register(tileRoutes);
 
+  /** Front-end configuration. Behind the session check, like everything else. */
+  app.get('/api/config', async () => ({
+    googleMapsApiKey: apiConfig.googleMapsApiKey || null,
+  }));
+
   app.get('/api/devices', async () => {
     const { rows } = await pool.query(`
       SELECT d.device_id, d.name, d.plate_number, d.model,

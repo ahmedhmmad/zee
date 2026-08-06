@@ -1,12 +1,10 @@
 /* Fleet console. Arabic UI, Latin numerals, Africa/Tripoli times. */
 
-const TRIPOLI = [13.1913, 32.8872]; // [lon, lat] for MapLibre
 const $ = (id) => document.getElementById(id);
 
 const state = {
   devices: [],
   selectedId: null,
-  markers: new Map(),
   map: null,
 };
 
@@ -158,81 +156,12 @@ $('logout').addEventListener('click', async () => {
 
 // --- Map --------------------------------------------------------------------
 
-/**
- * Raster fallback: OSM tiles proxied through our own origin, since OSM is not
- * reliably reachable from Libya. Labels are baked into the images in each
- * country's own language, which is why the vector basemap is preferred.
- */
-function rasterStyle() {
-  return {
-    version: 8,
-    sources: {
-      osm: {
-        type: 'raster',
-        tiles: [`${location.origin}/api/tiles/{z}/{x}/{y}.png`],
-        tileSize: 256,
-        attribution: '© OpenStreetMap',
-      },
-    },
-    layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
-  };
-}
-
-/**
- * Raster is the default. The vector basemap is kept behind ?vector=1 but is
- * NOT production-ready, for two reasons found on real hardware:
- *
- *  - Arabic renders as isolated, left-to-right letters. MapLibre needs the
- *    RTL text plugin for Arabic shaping and bidi, which is not wired up.
- *  - Tiles intermittently fail to parse ("Unimplemented type: 4") in Chrome
- *    even though the archive, byte ranges and decompression all verify
- *    correct when fetched directly.
- *
- * Raster labels each country in its own language, but the map is bounded to
- * Libya, so in practice everything on screen is Arabic anyway - which was the
- * actual requirement.
- */
-async function resolveStyle() {
-  if (!new URLSearchParams(location.search).has('vector')) return rasterStyle();
-
-  try {
-    const head = await fetch('/basemap/libya.pmtiles', { method: 'HEAD' });
-    if (!head.ok) throw new Error('no basemap');
-
-    const { buildStyle } = await import('/map-style.js');
-    // Teach MapLibre to read pmtiles:// URLs as ranged reads of one file.
-    maplibregl.addProtocol('pmtiles', new pmtiles.Protocol().tile);
-    return buildStyle(`${location.origin}/basemap/libya.pmtiles`, '/basemap/glyphs/{fontstack}/{range}.pbf');
-  } catch {
-    console.info('vector basemap unavailable, using raster tiles');
-    return rasterStyle();
-  }
-}
-
 async function initMap() {
   if (state.map) return;
-  state.map = new maplibregl.Map({
-    container: 'map',
-    style: await resolveStyle(),
-    center: TRIPOLI,
-    zoom: 11,
-    // OSM raster tiles label each country in its own language, so zooming out
-    // over the Mediterranean brings in Greek, Italian and English. Operations
-    // are in Libya, so constrain the view: at these bounds and zoom levels the
-    // labels are Arabic. Bounds are generous enough to cover border crossings.
-    maxBounds: [
-      [7, 17],
-      [28, 35],
-    ],
-    minZoom: 5,
-    maxZoom: 18,
-  });
-  state.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-left');
-
-  // app.js is a module, so nothing here is reachable from the console. Expose
-  // the map deliberately: diagnosing a blank basemap without it means guessing.
-  window.__zeeMap = state.map;
-  state.map.on('error', (e) => console.error('[map]', e?.error?.message ?? e));
+  const { googleMapsApiKey } = await api('/api/config');
+  const { createMap } = await import('/map.js');
+  state.map = await createMap(document.getElementById('map'), googleMapsApiKey, selectDevice);
+  console.info(`[map] using ${state.map.provider}`);
 }
 
 /**
@@ -249,34 +178,21 @@ function hasLocation(d) {
 }
 
 function syncMarkers() {
+  if (!state.map) return;
   for (const device of state.devices) {
     if (!hasLocation(device)) {
-      // Drop any marker left over from a previous fix.
-      const stale = state.markers.get(device.device_id);
-      if (stale) {
-        stale.remove();
-        state.markers.delete(device.device_id);
-      }
+      state.map.removeMarker(device.device_id);
       continue;
     }
-
-    let marker = state.markers.get(device.device_id);
-    if (!marker) {
-      const el = document.createElement('div');
-      el.className = 'truck-marker';
-      el.textContent = '🚛';
-      el.addEventListener('click', () => selectDevice(device.device_id));
-      marker = new maplibregl.Marker({ element: el }).setLngLat([device.longitude, device.latitude]);
-      marker.addTo(state.map);
-      state.markers.set(device.device_id, marker);
-    } else {
-      marker.setLngLat([device.longitude, device.latitude]);
-    }
-
-    const el = marker.getElement();
-    el.classList.toggle('unlocked', device.motor_locked === false);
-    el.classList.toggle('offline', connectionState(device) === 'offline');
-    el.title = device.name;
+    state.map.setMarker(device.device_id, device.latitude, device.longitude, {
+      title: device.name,
+      kind:
+        connectionState(device) === 'offline'
+          ? 'offline'
+          : device.motor_locked === false
+            ? 'unlocked'
+            : 'locked',
+    });
   }
 }
 
@@ -539,9 +455,7 @@ async function loadEvents(deviceId) {
 function selectDevice(deviceId) {
   state.selectedId = deviceId;
   const d = state.devices.find((x) => x.device_id === deviceId);
-  if (d && hasLocation(d)) {
-    state.map.flyTo({ center: [d.longitude, d.latitude], zoom: 14, duration: 800 });
-  }
+  if (d && hasLocation(d)) state.map.flyTo(d.latitude, d.longitude);
   renderDeviceList();
   renderDetail();
 }
