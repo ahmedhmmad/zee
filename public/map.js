@@ -85,6 +85,7 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
 
   const markers = new Map();
   const destinations = new Map();
+  let trail = null;
 
   /**
    * google.maps.Marker is deprecated in favour of AdvancedMarkerElement, but
@@ -200,6 +201,23 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
         d.line.setMap(null);
       }
       destinations.clear();
+    },
+
+    /** The road actually driven, from our own stored positions. */
+    setTrail(coords) {
+      if (!trail) {
+        trail = new google.maps.Polyline({
+          map,
+          strokeColor: '#57c795',
+          strokeOpacity: 0.85,
+          strokeWeight: 3,
+          zIndex: 0,
+        });
+      }
+      trail.setPath(coords.map(([lat, lon]) => ({ lat, lng: lon })));
+    },
+    clearTrail() {
+      trail?.setPath([]);
     },
     flyTo(lat, lon, zoom = 15) {
       map.panTo({ lat, lng: lon });
@@ -321,6 +339,32 @@ function createOsmMap(container, onMarkerClick) {
       if (map.getSource('destinations')) {
         map.getSource('destinations').setData({ type: 'FeatureCollection', features: [] });
       }
+    },
+    setTrail(coords) {
+      const data = {
+        type: 'FeatureCollection',
+        features: coords.length
+          ? [{
+              type: 'Feature',
+              geometry: { type: 'LineString', coordinates: coords.map(([lat, lon]) => [lon, lat]) },
+            }]
+          : [],
+      };
+      if (map.getSource('trail')) {
+        map.getSource('trail').setData(data);
+        return;
+      }
+      map.addSource('trail', { type: 'geojson', data });
+      map.addLayer({
+        id: 'trail-line',
+        type: 'line',
+        source: 'trail',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#57c795', 'line-width': 3, 'line-opacity': 0.85 },
+      });
+    },
+    clearTrail() {
+      map.getSource('trail')?.setData({ type: 'FeatureCollection', features: [] });
     },
     removeMarker(id) {
       const marker = markers.get(id);

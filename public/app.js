@@ -417,7 +417,12 @@ async function renderDetail() {
     : '';
 
   $('unlock-btn').disabled = false;
-  await Promise.all([loadCommands(d.device_id), loadEvents(d.device_id), loadArrivals(d.device_id)]);
+  await Promise.all([
+    loadCommands(d.device_id),
+    loadEvents(d.device_id),
+    loadArrivals(d.device_id),
+    loadTrail(d.device_id),
+  ]);
 }
 
 async function loadCommands(deviceId) {
@@ -513,6 +518,7 @@ function selectDevice(deviceId) {
 
 $('detail-close').addEventListener('click', () => {
   state.map?.clearDestinations?.();
+  state.map?.clearTrail?.();
   state.selectedId = null;
   $('detail').hidden = true;
   renderDeviceList();
@@ -645,6 +651,23 @@ async function loadArrivals(deviceId) {
 
 const formatDistance = (m) =>
   Number(m) >= 1000 ? `${(Number(m) / 1000).toFixed(1)} كم` : `${Math.round(Number(m))} م`;
+
+/**
+ * Draw the road the vehicle actually drove, from stored positions.
+ *
+ * This is the path that matters operationally: a straight line to the
+ * destination says where the truck should end up, but the trail shows where it
+ * has been - which is what reveals an unscheduled stop or a detour.
+ */
+async function loadTrail(deviceId) {
+  if (!state.map?.setTrail) return;
+  try {
+    const points = await api(`/api/devices/${deviceId}/track?hours=12`);
+    state.map.setTrail(points.map((p) => [p.latitude, p.longitude]));
+  } catch {
+    state.map.clearTrail?.();
+  }
+}
 
 /**
  * Only armed destinations for the selected vehicle are drawn. Showing every
