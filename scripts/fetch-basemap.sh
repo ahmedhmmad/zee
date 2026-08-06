@@ -35,12 +35,24 @@ if [ ! -x ./pmtiles ]; then
   chmod +x pmtiles
 fi
 
-# Protomaps publishes a daily planet build; find the most recent one.
+# Protomaps publishes daily planet builds but serves no directory index, so
+# probe backwards from today until one responds. Builds usually lag a day or
+# two, and occasionally more.
 echo "==> locating latest planet build"
-BUILD=$(curl -fsSL https://build.protomaps.com/ \
-  | grep -oE '[0-9]{8}\.pmtiles' | sort -u | tail -1)
+BUILD="${PROTOMAPS_BUILD:-}"
 if [ -z "$BUILD" ]; then
-  echo "could not determine latest build from build.protomaps.com" >&2
+  for i in $(seq 0 20); do
+    candidate="$(date -u -d "${i} days ago" +%Y%m%d).pmtiles"
+    if curl -fsI "https://build.protomaps.com/${candidate}" >/dev/null 2>&1; then
+      BUILD="$candidate"
+      break
+    fi
+  done
+fi
+if [ -z "$BUILD" ]; then
+  echo "no planet build found in the last 20 days." >&2
+  echo "check https://maps.protomaps.com/builds/ and re-run with:" >&2
+  echo "  PROTOMAPS_BUILD=YYYYMMDD.pmtiles bash scripts/fetch-basemap.sh" >&2
   exit 1
 fi
 echo "    using $BUILD"
