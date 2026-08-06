@@ -4,6 +4,7 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   devices: [],
+  locations: [],
   selectedId: null,
   map: null,
 };
@@ -52,6 +53,14 @@ function formatDuration(seconds) {
   if (m < 60) return `${m} دقيقة`;
   return `${Math.floor(m / 60)} ساعة و${m % 60} دقيقة`;
 }
+
+const LOCATION_KINDS = {
+  depot: 'مستودع',
+  station: 'محطة وقود',
+  customer: 'عميل',
+  yard: 'ساحة',
+  other: 'أخرى',
+};
 
 const EVENT_NAMES = {
   rfid_authorized: 'بطاقة RFID مصرّح بها',
@@ -621,31 +630,108 @@ const formatDistance = (m) =>
 $('arrival-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const deviceId = state.selectedId;
-  if (!deviceId) return;
-
-  const coords = parseCoords($('arrival-coords').value);
-  if (!coords) {
-    toast('الإحداثيات غير صالحة — مثال: 32.85255, 13.07818', 'bad');
+  const locationId = Number($('arrival-location').value);
+  if (!deviceId || !locationId) {
+    toast('اختر موقعاً أولاً', 'bad');
     return;
   }
 
+  const radius = $('arrival-radius').value;
   try {
+    // Only the location id goes over the wire; the server reads the
+    // coordinates from the catalogue, so a tampered request cannot move the
+    // unlock point.
     await api(`/api/devices/${deviceId}/arrivals`, {
       method: 'POST',
       body: JSON.stringify({
-        latitude: coords.latitude,
-        longitude: coords.longitude,
-        radiusM: Number($('arrival-radius').value),
+        locationId,
+        radiusM: radius ? Number(radius) : undefined,
         expiresInHours: Number($('arrival-expiry').value),
         reason: $('arrival-reason').value.trim(),
       }),
     });
-    $('arrival-coords').value = '';
     $('arrival-reason').value = '';
     toast('تم تفعيل الفتح التلقائي عند الوصول', 'ok');
     loadArrivals(deviceId);
   } catch {
     toast('تعذّر تفعيل الفتح التلقائي', 'bad');
+  }
+});
+
+// --- Locations catalogue ----------------------------------------------------
+
+async function loadLocations() {
+  state.locations = await api('/api/locations').catch(() => []);
+
+  const select = $('arrival-location');
+  select.innerHTML = state.locations.length
+    ? state.locations
+        .map((l) => `<option value="${l.id}">${escapeHtml(l.name)} — ${LOCATION_KINDS[l.kind] ?? l.kind}</option>`)
+        .join('')
+    : '<option value="">لا توجد مواقع — أضفها من صفحة المواقع</option>';
+
+  const list = $('locations-list');
+  if (!state.locations.length) {
+    list.innerHTML = '<li class="empty">لا توجد مواقع بعد</li>';
+    return;
+  }
+  list.innerHTML = state.locations
+    .map(
+      (l) => `<li>
+        <div class="row">
+          <strong>${escapeHtml(l.name)}</strong>
+          <button class="btn btn-ghost btn-xs" data-del-loc="${l.id}">حذف</button>
+        </div>
+        <div class="muted">
+          ${LOCATION_KINDS[l.kind] ?? l.kind} · نطاق ${l.radius_m} م ·
+          <span class="ltr-inline">${l.latitude.toFixed(5)}, ${l.longitude.toFixed(5)}</span>
+          ${l.address ? ` · ${escapeHtml(l.address)}` : ''}
+        </div>
+      </li>`,
+    )
+    .join('');
+
+  for (const btn of list.querySelectorAll('[data-del-loc]')) {
+    btn.addEventListener('click', async () => {
+      await api(`/api/locations/${btn.dataset.delLoc}`, { method: 'DELETE' });
+      toast('تم حذف الموقع', 'ok');
+      loadLocations();
+    });
+  }
+}
+
+$('open-locations').addEventListener('click', () => {
+  $('locations-page').hidden = false;
+  loadLocations();
+});
+$('close-locations').addEventListener('click', () => ($('locations-page').hidden = true));
+
+$('location-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const coords = parseCoords($('loc-coords').value);
+  if (!coords) {
+    toast('الإحداثيات غير صالحة — مثال: 32.85255, 13.07818', 'bad');
+    return;
+  }
+  try {
+    await api('/api/locations', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: $('loc-name').value.trim(),
+        kind: $('loc-kind').value,
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        radiusM: Number($('loc-radius').value),
+        address: $('loc-address').value.trim(),
+      }),
+    });
+    $('loc-name').value = '';
+    $('loc-coords').value = '';
+    $('loc-address').value = '';
+    toast('تمت إضافة الموقع', 'ok');
+    loadLocations();
+  } catch (err) {
+    toast(String(err.message) === 'name_taken' ? 'الاسم مستخدم بالفعل' : 'تعذّرت إضافة الموقع', 'bad');
   }
 });
 

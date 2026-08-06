@@ -199,6 +199,71 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     };
   });
 
+  // --- Locations catalogue ------------------------------------------------
+
+  app.get('/api/locations', async () => {
+    const { rows } = await pool.query(
+      `SELECT id, name, kind, radius_m, address, notes, is_active, created_by, created_at,
+              ST_Y(location::geometry) AS latitude,
+              ST_X(location::geometry) AS longitude
+         FROM locations
+        WHERE is_active
+        ORDER BY kind, name`,
+    );
+    return rows;
+  });
+
+  app.post('/api/locations', async (req, reply) => {
+    const b = (req.body ?? {}) as {
+      name?: string;
+      kind?: string;
+      latitude?: number;
+      longitude?: number;
+      radiusM?: number;
+      address?: string;
+      notes?: string;
+    };
+
+    const name = (b.name ?? '').trim();
+    const lat = Number(b.latitude);
+    const lon = Number(b.longitude);
+
+    if (name.length < 2) return reply.code(400).send({ error: 'name_required' });
+    if (!Number.isFinite(lat) || Math.abs(lat) > 90 || !Number.isFinite(lon) || Math.abs(lon) > 180) {
+      return reply.code(400).send({ error: 'invalid_coordinates' });
+    }
+
+    const kind = ['depot', 'station', 'customer', 'yard', 'other'].includes(b.kind ?? '')
+      ? b.kind
+      : 'other';
+    const radius = Math.min(Math.max(Math.round(Number(b.radiusM) || 100), 30), 5000);
+
+    try {
+      const { rows } = await pool.query<{ id: number }>(
+        `INSERT INTO locations (name, kind, location, radius_m, address, notes, created_by)
+         VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6, $7, $8)
+         RETURNING id`,
+        [name, kind, lon, lat, radius, b.address?.trim() || null, b.notes?.trim() || null, actorOf(req)],
+      );
+      await audit(req, 'location_created', null, { id: rows[0]!.id, name, latitude: lat, longitude: lon });
+      return { id: rows[0]!.id };
+    } catch (err) {
+      if ((err as { code?: string }).code === '23505') {
+        return reply.code(409).send({ error: 'name_taken' });
+      }
+      throw err;
+    }
+  });
+
+  /** Soft delete: arrival rules and audit entries still reference it. */
+  app.delete('/api/locations/:locationId', async (req, reply) => {
+    const locationId = Number((req.params as { locationId?: string }).locationId);
+    if (!Number.isInteger(locationId)) return reply.code(400).send({ error: 'invalid_id' });
+    await pool.query('UPDATE locations SET is_active = false WHERE id = $1', [locationId]);
+    await audit(req, 'location_deleted', null, { id: locationId });
+    return { ok: true };
+  });
+
   // --- Arrival unlocks ----------------------------------------------------
 
   app.get('/api/devices/:id/arrivals', async (req, reply) => {
@@ -237,6 +302,7 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     if (!id) return reply;
 
     const body = (req.body ?? {}) as {
+      locationId?: number;
       name?: string;
       latitude?: number;
       longitude?: number;
@@ -245,31 +311,65 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
       expiresInHours?: number;
     };
 
-    const lat = Number(body.latitude);
-    const lon = Number(body.longitude);
-    if (!Number.isFinite(lat) || Math.abs(lat) > 90 || !Number.isFinite(lon) || Math.abs(lon) > 180) {
-      return reply.code(400).send({ error: 'invalid_coordinates' });
-    }
     if (!body.reason || body.reason.trim().length < 3) {
       return reply.code(400).send({ error: 'reason_required' });
     }
 
+    // Coordinates come from the catalogue by preference, read server-side:
+    // the client sends an id, never a position, so a tampered or mistyped
+    // request cannot move a truck's unlock point.
+    let lat: number;
+    let lon: number;
+    let locationId: number | null = null;
+    let defaultRadius = 100;
+    let name = (body.name ?? '').trim();
+
+    if (body.locationId != null) {
+      const { rows } = await pool.query<{
+        id: number;
+        name: string;
+        latitude: number;
+        longitude: number;
+        radius_m: number;
+      }>(
+        `SELECT id, name, radius_m,
+                ST_Y(location::geometry) AS latitude,
+                ST_X(location::geometry) AS longitude
+           FROM locations WHERE id = $1 AND is_active`,
+        [body.locationId],
+      );
+      const loc = rows[0];
+      if (!loc) return reply.code(404).send({ error: 'location_not_found' });
+      lat = loc.latitude;
+      lon = loc.longitude;
+      locationId = loc.id;
+      defaultRadius = loc.radius_m;
+      name = name || loc.name;
+    } else {
+      lat = Number(body.latitude);
+      lon = Number(body.longitude);
+      if (!Number.isFinite(lat) || Math.abs(lat) > 90 || !Number.isFinite(lon) || Math.abs(lon) > 180) {
+        return reply.code(400).send({ error: 'invalid_coordinates' });
+      }
+    }
+
     // Below ~30m the vehicle would often pass through without a position
     // landing inside; above 5km it stops meaning "arrived" at all.
-    const radius = Math.min(Math.max(Math.round(Number(body.radiusM) || 100), 30), 5000);
+    const radius = Math.min(Math.max(Math.round(Number(body.radiusM) || defaultRadius), 30), 5000);
     const hours = Math.min(Math.max(Number(body.expiresInHours) || 12, 1), 72);
-    const name = (body.name ?? '').trim() || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+    if (!name) name = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
 
     const { rows } = await pool.query<{ id: number }>(
-      `INSERT INTO arrival_unlocks (device_id, name, location, radius_m, reason, created_by, expires_at)
+      `INSERT INTO arrival_unlocks (device_id, name, location, radius_m, reason, created_by, expires_at, location_id)
        VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6, $7,
-               now() + ($8 || ' hours')::interval)
+               now() + ($8 || ' hours')::interval, $9)
        RETURNING id`,
-      [id, name, lon, lat, radius, body.reason.trim(), actorOf(req), hours],
+      [id, name, lon, lat, radius, body.reason.trim(), actorOf(req), hours, locationId],
     );
 
     await audit(req, 'arrival_unlock_armed', id, {
       arrivalId: rows[0]!.id,
+      locationId,
       name,
       latitude: lat,
       longitude: lon,

@@ -35,6 +35,7 @@
       <span>منظومة أقفال الشاحنات</span>
     </div>
     <div class="topbar-end">
+      <button id="open-locations" class="btn btn-ghost">📍 المواقع</button>
       <button id="map-theme" class="btn btn-ghost" hidden
               title="تبديل مظهر الخريطة بين الداكن والفاتح"></button>
       <span id="conn-status" class="pill pill-muted">جارٍ الاتصال…</span>
@@ -97,16 +98,16 @@
 
       <h3>الفتح التلقائي عند الوصول</h3>
       <form id="arrival-form" class="arrival-form">
-        <label for="arrival-coords">الإحداثيات (خط العرض، خط الطول)</label>
-        <input type="text" id="arrival-coords" required
-               placeholder="32.85255, 13.07818" class="ltr-input" />
+        <label for="arrival-location">الموقع</label>
+        <select id="arrival-location" required></select>
 
         <div class="arrival-row">
           <div>
             <label for="arrival-radius">نطاق الوصول</label>
             <select id="arrival-radius">
+              <option value="">افتراضي الموقع</option>
               <option value="50">50 متر</option>
-              <option value="100" selected>100 متر</option>
+              <option value="100">100 متر</option>
               <option value="250">250 متر</option>
               <option value="500">500 متر</option>
             </select>
@@ -141,6 +142,63 @@
       <ul id="event-list" class="feed"></ul>
     </aside>
   </main>
+</div>
+
+<!-- إدارة المواقع -->
+<div id="locations-page" class="page" hidden>
+  <div class="page-head">
+    <h2>المواقع المعتمدة</h2>
+    <button id="close-locations" class="btn btn-ghost">رجوع</button>
+  </div>
+
+  <p class="muted page-intro">
+    تُدخَل إحداثيات كل موقع مرة واحدة هنا، ثم تُختار من القائمة عند تفعيل الفتح
+    التلقائي — بدلاً من كتابتها في كل مرة، حيث يكفي خطأ في رقم واحد ليقع الفتح
+    في مكان آخر.
+  </p>
+
+  <form id="location-form" class="location-form">
+    <div class="arrival-row">
+      <div>
+        <label for="loc-name">الاسم</label>
+        <input type="text" id="loc-name" required minlength="2" placeholder="مثال: مستودع طرابلس" />
+      </div>
+      <div>
+        <label for="loc-kind">النوع</label>
+        <select id="loc-kind">
+          <option value="depot">مستودع</option>
+          <option value="station">محطة وقود</option>
+          <option value="customer">عميل</option>
+          <option value="yard">ساحة</option>
+          <option value="other" selected>أخرى</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="arrival-row">
+      <div>
+        <label for="loc-coords">الإحداثيات</label>
+        <input type="text" id="loc-coords" required placeholder="32.85255, 13.07818" class="ltr-input" />
+      </div>
+      <div>
+        <label for="loc-radius">نطاق الوصول الافتراضي</label>
+        <select id="loc-radius">
+          <option value="50">50 متر</option>
+          <option value="100" selected>100 متر</option>
+          <option value="250">250 متر</option>
+          <option value="500">500 متر</option>
+          <option value="1000">1 كم</option>
+        </select>
+      </div>
+    </div>
+
+    <label for="loc-address">العنوان أو ملاحظات (اختياري)</label>
+    <input type="text" id="loc-address" placeholder="مثال: طريق المطار، بوابة رقم 2" />
+
+    <button type="submit" class="btn btn-primary">إضافة الموقع</button>
+  </form>
+
+  <ul id="locations-list" class="locations-list"></ul>
 </div>
 
 <!-- تأكيد الفتح -->

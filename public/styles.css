@@ -367,3 +367,54 @@ select {
 .ltr-input { direction: ltr; text-align: start; }
 .btn-xs { font-size: .72rem; padding: .2rem .55rem; }
 #arrival-list .row { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+
+/* --- Locations page ------------------------------------------------------- */
+
+.page {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  background: var(--bg);
+  padding: 1.5rem;
+  overflow-y: auto;
+}
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-block-end: .5rem;
+}
+.page-intro { max-inline-size: 60ch; line-height: 1.8; }
+
+.location-form {
+  max-inline-size: 720px;
+  margin-block: 1.2rem;
+  padding: 1.2rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.locations-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-inline-size: 720px;
+}
+.locations-list li {
+  padding: .75rem .9rem;
+  margin-block-end: .5rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: .85rem;
+}
+.locations-list .row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: .5rem;
+  margin-block-end: .25rem;
+}
+.locations-list .empty { color: var(--muted); }
