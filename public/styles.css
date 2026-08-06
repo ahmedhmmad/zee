@@ -194,7 +194,14 @@ label { font-size: .85rem; color: var(--muted); }
 .pill-warn { background: rgba(217,146,43,.18); color: #e8b264; }
 .pill-muted { background: var(--surface-2); color: var(--muted); }
 
-.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; margin-block: 1rem; }
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .6rem;
+  margin-block: 1rem;
+}
+/* An odd number of stats would otherwise leave a hole beside the last one. */
+.stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
 .stat {
   background: var(--surface-2);
   border: 1px solid var(--border);

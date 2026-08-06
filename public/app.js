@@ -171,9 +171,30 @@ function initMap() {
   state.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-left');
 }
 
+/**
+ * A device that has never had a GPS fix reports 0,0 — which is a real point in
+ * the Gulf of Guinea. Plotting it would put a Tripoli truck in the Atlantic,
+ * so treat that as "no location" rather than a coordinate.
+ */
+function hasLocation(d) {
+  return (
+    d.latitude != null &&
+    d.longitude != null &&
+    !(Math.abs(d.latitude) < 0.0001 && Math.abs(d.longitude) < 0.0001)
+  );
+}
+
 function syncMarkers() {
   for (const device of state.devices) {
-    if (device.latitude == null || device.longitude == null) continue;
+    if (!hasLocation(device)) {
+      // Drop any marker left over from a previous fix.
+      const stale = state.markers.get(device.device_id);
+      if (stale) {
+        stale.remove();
+        state.markers.delete(device.device_id);
+      }
+      continue;
+    }
 
     let marker = state.markers.get(device.device_id);
     if (!marker) {
@@ -293,11 +314,10 @@ async function renderDetail() {
   $('d-seen').textContent = `${fmtAgo(d.last_seen_at)} (${fmtTime(d.last_seen_at)})`;
   $('d-wake').textContent = WAKE_REASONS[d.wake_source] ?? '—';
 
-  // A stale fix is worth saying out loud rather than drawing a confident dot.
-  $('d-pos').textContent =
-    d.latitude != null
-      ? `${d.latitude.toFixed(5)}, ${d.longitude.toFixed(5)}${d.positioned ? '' : ' (موقع قديم)'}`
-      : 'لا يوجد';
+  // Say "no fix" plainly rather than drawing a confident dot in the wrong place.
+  $('d-pos').textContent = !hasLocation(d)
+    ? 'لا يوجد تحديد GPS بعد — الجهاز داخل مبنى'
+    : `${d.latitude.toFixed(5)}, ${d.longitude.toFixed(5)}${d.positioned ? '' : ' (موقع قديم)'}`;
 
   const alarms = Object.keys(d.active_alarms ?? {}).filter((k) => d.active_alarms[k]);
   const alarmBox = $('d-alarms');
@@ -362,7 +382,7 @@ async function loadEvents(deviceId) {
 function selectDevice(deviceId) {
   state.selectedId = deviceId;
   const d = state.devices.find((x) => x.device_id === deviceId);
-  if (d?.latitude != null) {
+  if (d && hasLocation(d)) {
     state.map.flyTo({ center: [d.longitude, d.latitude], zoom: 14, duration: 800 });
   }
   renderDeviceList();
