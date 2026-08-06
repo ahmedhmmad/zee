@@ -167,6 +167,16 @@ function initMap() {
     },
     center: TRIPOLI,
     zoom: 11,
+    // OSM raster tiles label each country in its own language, so zooming out
+    // over the Mediterranean brings in Greek, Italian and English. Operations
+    // are in Libya, so constrain the view: at these bounds and zoom levels the
+    // labels are Arabic. Bounds are generous enough to cover border crossings.
+    maxBounds: [
+      [7, 17],
+      [28, 35],
+    ],
+    minZoom: 5,
+    maxZoom: 18,
   });
   state.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-left');
 }
