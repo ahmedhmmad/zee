@@ -294,34 +294,29 @@ export async function markCommandFailed(id: number, error: string): Promise<void
 }
 
 /**
- * Close the loop on an unlock: match a P45 report back to the command that
- * caused it. Only the device's own report can do this — a successful socket
- * write proves nothing about whether the lock actually opened.
+ * Attribute a lock event to the command that caused it, for the audit trail.
+ *
+ * Deliberately conservative. Event source 4 means "remote static password",
+ * which covers BOTH an SMS unlock and a platform unlock - the protocol gives
+ * us no way to tell them apart. Attributing a card swipe or an SMS unlock to a
+ * platform command would put a false claim in the audit log, which is worse
+ * than leaving the event unattributed.
+ *
+ * So we only link when a command of the matching type was confirmed by the
+ * device seconds earlier, and the event itself reports a successful unlock.
+ * Command *status* is driven by the P43/P52 response, not by this.
  */
-export async function confirmCommandFromEvent(
+export async function linkEventToCommand(
   deviceId: string,
   eventId: number,
   eventSourceCode: number,
+  unlockAllowed: boolean,
 ): Promise<void> {
-  const types =
-    eventSourceCode === 4
-      ? ['unlock_static']
-      : eventSourceCode === 6
-        ? ['unlock_dynamic']
-        : [];
-  if (types.length === 0) return;
+  if (!unlockAllowed) return;
 
-  await pool.query(
-    `WITH matched AS (
-       SELECT id FROM commands
-        WHERE device_id = $1 AND status = 'sent' AND command_type = ANY($2)
-        ORDER BY sent_at DESC LIMIT 1
-     )
-     UPDATE commands c
-        SET status = 'confirmed', confirmed_at = now()
-       FROM matched m WHERE c.id = m.id`,
-    [deviceId, types],
-  );
+  const types =
+    eventSourceCode === 4 ? ['unlock_static'] : eventSourceCode === 6 ? ['unlock_dynamic'] : [];
+  if (types.length === 0) return;
 
   await pool.query(
     `UPDATE lock_events le
@@ -329,35 +324,49 @@ export async function confirmCommandFromEvent(
        FROM commands c
       WHERE le.id = $1
         AND c.device_id = $2
+        AND c.command_type = ANY($3)
         AND c.status = 'confirmed'
-        AND c.confirmed_at > now() - interval '1 minute'`,
-    [eventId, deviceId],
+        AND c.confirmed_at > now() - interval '2 minutes'`,
+    [eventId, deviceId, types],
   );
 }
 
 /**
- * Mark an in-flight command failed because the device said so.
+ * Resolve a command from the device's own response.
  *
- * A refused unlock never produces a P45, so without this the command would sit
- * at 'sent' forever and the UI would keep showing "awaiting device
- * confirmation" for something the device already rejected.
+ * The response is the authority on whether a command was accepted: an unlock
+ * answers (P43,1,0) or (P43,0,n), and a query answers with its value. Without
+ * this, query commands sat at 'sent' indefinitely because only unlocks ever
+ * had a completion path.
+ *
+ * Matches on the command word at the start of the payload, so (P44,1) is
+ * resolved by a P44 response and nothing else.
  */
-export async function failCommandFromResponse(
+export async function resolveCommandFromResponse(
   deviceId: string,
-  commandTypes: string[],
-  error: string,
-): Promise<void> {
-  await pool.query(
+  commandWord: string,
+  ok: boolean,
+  response: string,
+): Promise<number | null> {
+  const { rows } = await pool.query<{ id: number }>(
     `WITH matched AS (
        SELECT id FROM commands
-        WHERE device_id = $1 AND status = 'sent' AND command_type = ANY($2)
+        WHERE device_id = $1
+          AND status = 'sent'
+          AND payload LIKE $2
         ORDER BY sent_at DESC LIMIT 1
      )
      UPDATE commands c
-        SET status = 'failed', last_error = $3
-       FROM matched m WHERE c.id = m.id`,
-    [deviceId, commandTypes, error],
+        SET status       = CASE WHEN $3 THEN 'confirmed' ELSE 'failed' END,
+            confirmed_at = CASE WHEN $3 THEN now() END,
+            last_error   = CASE WHEN $3 THEN NULL ELSE $4 END,
+            response     = $4
+       FROM matched m
+      WHERE c.id = m.id
+      RETURNING c.id`,
+    [deviceId, `(${commandWord}%`, ok, response.slice(0, 500)],
   );
+  return rows[0]?.id ?? null;
 }
 
 export async function audit(

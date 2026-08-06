@@ -149,7 +149,12 @@ export class DeviceSession {
         const id = await store.insertLockEvent(frame);
         this.send(encode.ackData(frame.eventSerial));
         if (id !== null) {
-          await store.confirmCommandFromEvent(frame.deviceId, id, frame.eventSourceCode);
+          await store.linkEventToCommand(
+            frame.deviceId,
+            id,
+            frame.eventSourceCode,
+            frame.unlockAllowed,
+          );
           await store.audit('lock_event', frame.deviceId, {
             source: frame.eventSource,
             unlockAllowed: frame.unlockAllowed,
@@ -191,27 +196,31 @@ export class DeviceSession {
           params: frame.params,
         });
 
-        // A refused unlock is reported here and never produces a P45, so the
-        // command has to be failed explicitly or it stays "sent" forever.
+        // The response is the authority on whether a command was accepted.
         //   P43   -> success, wrongCount
         //   P52,3 -> commandId, success, wrongCount
+        // Everything else is a query, and answering at all means it worked.
         const isStatic = frame.command === 'P43';
         const isDynamic = frame.command === 'P52' && frame.params[0] === '3';
+
+        let ok = true;
         if (isStatic || isDynamic) {
           const success = isStatic ? frame.params[0] : frame.params[1];
           const wrongCount = isStatic ? frame.params[1] : frame.params[2];
-          if (success !== '1') {
-            const error = `device refused unlock (wrong password, ${wrongCount ?? '?'} consecutive failures)`;
-            await store.failCommandFromResponse(
-              frame.deviceId,
-              [isStatic ? 'unlock_static' : 'unlock_dynamic'],
-              error,
-            );
+          ok = success === '1';
+          if (!ok) {
             // Five consecutive failures trips an alarm on the device itself.
             this.log(`UNLOCK REFUSED — ${wrongCount ?? '?'} consecutive wrong passwords`);
             await store.audit('unlock_refused', frame.deviceId, { wrongCount });
           }
         }
+
+        await store.resolveCommandFromResponse(
+          frame.deviceId,
+          frame.command,
+          ok,
+          frame.params.join(','),
+        );
         break;
       }
     }
