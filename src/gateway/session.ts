@@ -23,6 +23,7 @@ export class DeviceSession {
   #deviceId: string | null = null;
   #known = false;
   #events: SessionEvents;
+  #handshakeTimer: NodeJS.Timeout | null = null;
 
   constructor(socket: Socket, events: SessionEvents) {
     this.socket = socket;
@@ -32,12 +33,18 @@ export class DeviceSession {
     socket.setKeepAlive(true, 60_000);
     socket.setTimeout(config.gateway.idleTimeoutMs);
 
+    // Drop connections that never send a frame. Scanners hit an open port
+    // constantly; without this every one of them lingers and logs.
+    this.#handshakeTimer = setTimeout(() => {
+      if (this.#deviceId === null) socket.destroy();
+    }, config.gateway.handshakeTimeoutMs);
+
     socket.on('data', (chunk: Buffer) => void this.#onData(chunk));
     socket.on('timeout', () => {
       this.log('idle timeout, closing');
       socket.destroy();
     });
-    socket.on('error', (err) => this.log(`socket error: ${err.message}`));
+    socket.on('error', (err) => this.log(`socket error: ${err.message}`, true));
     socket.on('close', () => void this.#onClose());
   }
 
@@ -90,6 +97,8 @@ export class DeviceSession {
 
     // Bind the socket to a device on first sight, and check the allowlist.
     if (this.#deviceId === null) {
+      if (this.#handshakeTimer) clearTimeout(this.#handshakeTimer);
+      this.#handshakeTimer = null;
       this.#deviceId = frame.deviceId;
       this.#known = config.requireKnownDevice ? await store.isKnownDevice(frame.deviceId) : true;
 
@@ -204,14 +213,21 @@ export class DeviceSession {
   }
 
   async #onClose(): Promise<void> {
+    if (this.#handshakeTimer) clearTimeout(this.#handshakeTimer);
     if (this.#deviceId && this.#known) {
       await store.setConnected(this.#deviceId, false).catch(() => {});
     }
-    this.log('closed');
+    this.log('closed', true);
     this.#events.onClosed(this.#deviceId, this);
   }
 
-  log(msg: string): void {
+  /**
+   * `quietIfAnonymous` suppresses the message for sockets that never sent a
+   * frame. Those are almost always port scanners, and logging both an error
+   * and a close for each one buries the device you are trying to watch.
+   */
+  log(msg: string, quietIfAnonymous = false): void {
+    if (quietIfAnonymous && this.#deviceId === null) return;
     console.log(`[gateway] ${this.#deviceId ?? this.remoteIp} ${msg}`);
   }
 }
