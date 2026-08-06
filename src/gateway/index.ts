@@ -66,6 +66,13 @@ async function main(): Promise<void> {
   });
   console.log('[gateway] listening for command_queued notifications');
 
+  // A command held by not_before becomes due while the device may already be
+  // connected, and NOTIFY only fires on insert. Sweep the live sessions so
+  // scheduled work is not stranded until the next reconnect.
+  setInterval(() => {
+    for (const session of sessions.values()) void session.drainCommands();
+  }, 60_000).unref();
+
   server.listen(config.gateway.port, config.gateway.host, () => {
     console.log(`[gateway] listening on ${config.gateway.host}:${config.gateway.port}`);
     console.log(`[gateway] device allowlist ${config.requireKnownDevice ? 'ENFORCED' : 'DISABLED (dev only)'}`);

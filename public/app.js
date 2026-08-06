@@ -333,14 +333,29 @@ function connectionState(d) {
   return Date.now() - new Date(d.last_seen_at) < SLEEP_GRACE_MS ? 'sleeping' : 'offline';
 }
 
+/**
+ * An "unlocked" reading decays; a "locked" one does not.
+ *
+ * The device auto-locks roughly a minute after an unlock (P83) and is usually
+ * asleep by then, so it never reports the change. A stale "open" therefore
+ * probably means "closed by now" - whereas a lock cannot open itself, so a
+ * stale "closed" stays trustworthy.
+ */
+const UNLOCK_STALE_MS = 3 * 60 * 1000;
+
+function isUnlockReadingStale(d) {
+  if (d.motor_locked !== false || d.is_connected) return false;
+  if (!d.last_position_at) return true;
+  return Date.now() - new Date(d.last_position_at) > UNLOCK_STALE_MS;
+}
+
 function lockPill(d) {
   const state = connectionState(d);
   if (state === 'offline') return '<span class="pill pill-warn">لا اتصال</span>';
 
-  // Lock state is still known while asleep: it is whatever the device last
-  // reported, and the lock does not move on its own.
-  const lock =
-    d.motor_locked === false
+  const lock = isUnlockReadingStale(d)
+    ? '<span class="pill pill-warn" title="قد يكون الجهاز أُقفل تلقائياً بعد ذلك">مفتوح؟</span>'
+    : d.motor_locked === false
       ? '<span class="pill pill-danger">مفتوح</span>'
       : '<span class="pill pill-ok">مقفل</span>';
 
@@ -385,6 +400,11 @@ async function renderDetail() {
   $('d-name').textContent = d.name;
   $('d-plate').textContent = `${d.plate_number ?? '—'} · ${d.device_id}`;
   $('d-lock').innerHTML = lockPill(d);
+  // Say why the reading is uncertain, rather than leaving a bare question mark.
+  $('d-lock-note').textContent = isUnlockReadingStale(d)
+    ? 'آخر حالة معروفة عند الفتح — يُرجَّح أن الجهاز أُقفل تلقائياً بعدها. سيتم التحديث عند استيقاظه.'
+    : '';
+  $('d-lock-note').hidden = !isUnlockReadingStale(d);
   $('d-battery').textContent = batteryLabel(d);
   $('d-speed').textContent = d.speed_kph != null ? `${Number(d.speed_kph).toFixed(0)} كم/س` : '—';
   $('d-signal').textContent = signalLabel(d);

@@ -214,6 +214,12 @@ export class DeviceSession {
           const success = isStatic ? frame.params[0] : frame.params[1];
           const wrongCount = isStatic ? frame.params[1] : frame.params[2];
           ok = success === '1';
+          if (ok) {
+            // The device auto-locks about a minute from now, while asleep, and
+            // would never report it. Schedule a state refresh so the console
+            // does not sit showing "open" for a lock that has closed.
+            await store.queueLockStateRefresh(frame.deviceId);
+          }
           if (!ok) {
             // Five consecutive failures trips an alarm on the device itself.
             this.log(`UNLOCK REFUSED — ${wrongCount ?? '?'} consecutive wrong passwords`);

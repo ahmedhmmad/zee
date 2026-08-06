@@ -291,13 +291,38 @@ export async function claimPendingCommands(deviceId: string): Promise<PendingCom
     pool.query<PendingCommand>(
       `SELECT id, device_id, command_type, payload, expires_at
          FROM commands
-        WHERE device_id = $1 AND status IN ('queued','approved') AND expires_at > now()
+        WHERE device_id = $1
+          AND status IN ('queued','approved')
+          AND expires_at > now()
+          AND (not_before IS NULL OR not_before <= now())
         ORDER BY requested_at ASC
         LIMIT 20`,
       [deviceId],
     ),
   );
   return rows;
+}
+
+/**
+ * Queue a position query to run after the device has had time to auto-lock.
+ *
+ * Without this the state we hold is frozen at the moment of unlocking: the
+ * device closes the lock a minute later (P83) while asleep, and nobody ever
+ * tells us. The console then shows "open" for a lock that is shut - which on a
+ * fuel tanker is exactly the wrong way round to be wrong.
+ */
+export async function queueLockStateRefresh(deviceId: string, delayMinutes = 3): Promise<void> {
+  await pool.query(
+    `INSERT INTO commands (device_id, command_type, payload, requested_by, reason, status, not_before, expires_at)
+     SELECT $1, 'query_position', '(P02)', 'system', 'refresh lock state after unlock', 'queued',
+            now() + ($2 || ' minutes')::interval, now() + interval '6 hours'
+      WHERE NOT EXISTS (
+        SELECT 1 FROM commands
+         WHERE device_id = $1 AND command_type = 'query_position'
+           AND status IN ('queued','approved')
+      )`,
+    [deviceId, delayMinutes],
+  );
 }
 
 export async function markCommandSent(id: number): Promise<void> {
