@@ -123,10 +123,10 @@ export async function updateDeviceState(p: PositionFrame, db: Db = pool): Promis
        device_id, last_seen_at, last_position_at, location, positioned,
        speed_kph, heading_deg, satellites, battery_percent, charging,
        motor_locked, rope_inserted, gsm_signal, wake_source, active_alarms,
-       is_connected, updated_at
+       mileage_km, mcc, mnc, is_connected, updated_at
      ) VALUES (
        $1, now(), $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5,
-       $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, true, now()
+       $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, true, now()
      )
      ON CONFLICT (device_id) DO UPDATE SET
        last_seen_at     = now(),
@@ -143,6 +143,9 @@ export async function updateDeviceState(p: PositionFrame, db: Db = pool): Promis
        gsm_signal       = EXCLUDED.gsm_signal,
        wake_source      = EXCLUDED.wake_source,
        active_alarms    = EXCLUDED.active_alarms,
+       mileage_km       = EXCLUDED.mileage_km,
+       mcc              = EXCLUDED.mcc,
+       mnc              = EXCLUDED.mnc,
        is_connected     = true,
        updated_at       = now()
      WHERE device_state.last_position_at IS NULL
@@ -163,7 +166,27 @@ export async function updateDeviceState(p: PositionFrame, db: Db = pool): Promis
       p.gsmSignalValid ? p.gsmSignal : null,
       p.wakeSource,
       JSON.stringify(alarms),
+      p.mileageKm,
+      p.mcc,
+      p.mnc,
     ],
+  );
+
+  // The IMEI rides along in every position frame once P94 bit0 is enabled;
+  // record it on the device rather than only per-row.
+  if (p.imei) {
+    await db.query(
+      'UPDATE devices SET imei = $2 WHERE device_id = $1 AND (imei IS NULL OR imei <> $2)',
+      [p.deviceId, p.imei],
+    );
+  }
+}
+
+/** Store the firmware string from a P01 response. */
+export async function recordFirmware(deviceId: string, firmware: string): Promise<void> {
+  await pool.query(
+    'UPDATE devices SET firmware_version = $2, firmware_seen_at = now() WHERE device_id = $1',
+    [deviceId, firmware.slice(0, 200)],
   );
 }
 

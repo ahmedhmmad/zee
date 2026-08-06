@@ -55,12 +55,14 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/devices', async () => {
     const { rows } = await pool.query(`
       SELECT d.device_id, d.name, d.plate_number, d.model,
-             s.last_seen_at, s.last_position_at, s.is_connected,
+             d.imei, d.firmware_version, d.sim_msisdn,
+             s.last_seen_at, s.last_position_at, s.is_connected, s.connected_at,
              ST_Y(s.location::geometry) AS latitude,
              ST_X(s.location::geometry) AS longitude,
              s.positioned, s.speed_kph, s.heading_deg, s.satellites,
              s.battery_percent, s.charging, s.motor_locked, s.rope_inserted,
-             s.gsm_signal, s.wake_source, s.active_alarms
+             s.gsm_signal, s.wake_source, s.active_alarms,
+             s.mileage_km, s.mcc, s.mnc
         FROM devices d
         LEFT JOIN device_state s ON s.device_id = d.device_id
        WHERE d.is_active

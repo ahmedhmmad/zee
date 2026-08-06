@@ -63,15 +63,28 @@
         <div class="stat"><span class="stat-label">حالة القفل</span><span class="stat-value" id="d-lock"></span></div>
         <div class="stat"><span class="stat-label">البطارية</span><span class="stat-value" id="d-battery"></span></div>
         <div class="stat"><span class="stat-label">السرعة</span><span class="stat-value" id="d-speed"></span></div>
+        <div class="stat"><span class="stat-label">إشارة الشبكة</span><span class="stat-value" id="d-signal"></span></div>
         <div class="stat"><span class="stat-label">الأقمار</span><span class="stat-value" id="d-sats"></span></div>
       </div>
 
       <dl class="kv">
         <dt>حبل القفل</dt><dd id="d-rope"></dd>
+        <dt>المسافة المقطوعة</dt><dd id="d-mileage"></dd>
         <dt>آخر تحديث</dt><dd id="d-seen"></dd>
         <dt>الموقع</dt><dd id="d-pos" class="ltr-inline"></dd>
         <dt>سبب الاستيقاظ</dt><dd id="d-wake"></dd>
+        <dt>الشبكة</dt><dd id="d-carrier"></dd>
       </dl>
+
+      <details class="hw">
+        <summary>معلومات الجهاز</summary>
+        <dl class="kv">
+          <dt>رقم الجهاز</dt><dd id="d-devid" class="ltr-inline"></dd>
+          <dt>الموديل</dt><dd id="d-model"></dd>
+          <dt>IMEI</dt><dd id="d-imei" class="ltr-inline"></dd>
+          <dt>إصدار البرنامج</dt><dd id="d-firmware" class="ltr-inline break"></dd>
+        </dl>
+      </details>
 
       <div id="d-alarms" class="alarms" hidden></div>
 

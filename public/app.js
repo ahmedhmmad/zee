@@ -241,8 +241,31 @@ function lockPill(d) {
   return '<span class="pill pill-ok">مقفل</span>';
 }
 
-const batteryLabel = (d) =>
-  d.charging ? 'قيد الشحن' : d.battery_percent != null ? `${d.battery_percent}%` : '—';
+/**
+ * Charging and level are independent: a device can report 35% while charging.
+ * Older units (PCB < 2.7.1) send 0xFF instead of a level while charging, in
+ * which case battery_percent is null and only the state is known.
+ */
+function batteryLabel(d) {
+  if (d.battery_percent == null) return d.charging ? 'قيد الشحن' : '—';
+  return d.charging ? `${d.battery_percent}% (شحن)` : `${d.battery_percent}%`;
+}
+
+/** GSM signal is 0-31; 99 means the device saw no network at all. */
+function signalLabel(d) {
+  const v = d.gsm_signal;
+  if (v == null) return 'لا توجد إشارة';
+  const bars = v >= 20 ? 'ممتازة' : v >= 14 ? 'جيدة' : v >= 8 ? 'ضعيفة' : 'ضعيفة جداً';
+  return `${v}/31 · ${bars}`;
+}
+
+// MCC 606 is Libya. MNC 00 Libyana, 01 Al-Madar, 02 Al-Jeel, 03 LibyaPhone.
+const CARRIERS = { '606-0': 'ليبيانا', '606-1': 'المدار الجديد', '606-2': 'الجيل الجديد', '606-3': 'ليبيا فون' };
+
+function carrierLabel(d) {
+  if (d.mcc == null) return '—';
+  return CARRIERS[`${d.mcc}-${d.mnc}`] ?? `MCC ${d.mcc} / MNC ${d.mnc}`;
+}
 
 async function renderDetail() {
   const d = state.devices.find((x) => x.device_id === state.selectedId);
@@ -258,8 +281,15 @@ async function renderDetail() {
   $('d-lock').innerHTML = lockPill(d);
   $('d-battery').textContent = batteryLabel(d);
   $('d-speed').textContent = d.speed_kph != null ? `${Number(d.speed_kph).toFixed(0)} كم/س` : '—';
+  $('d-signal').textContent = signalLabel(d);
   $('d-sats').textContent = d.satellites ?? '—';
   $('d-rope').textContent = d.rope_inserted == null ? '—' : d.rope_inserted ? 'مُدخَل' : 'مسحوب';
+  $('d-mileage').textContent = d.mileage_km != null ? `${d.mileage_km} كم` : '—';
+  $('d-carrier').textContent = carrierLabel(d);
+  $('d-devid').textContent = d.device_id;
+  $('d-model').textContent = d.model ?? '—';
+  $('d-imei').textContent = d.imei ?? '—';
+  $('d-firmware').textContent = d.firmware_version ?? 'غير معروف — أرسل الأمر P01';
   $('d-seen').textContent = `${fmtAgo(d.last_seen_at)} (${fmtTime(d.last_seen_at)})`;
   $('d-wake').textContent = WAKE_REASONS[d.wake_source] ?? '—';
 

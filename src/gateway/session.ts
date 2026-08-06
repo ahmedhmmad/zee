@@ -203,6 +203,12 @@ export class DeviceSession {
         const isStatic = frame.command === 'P43';
         const isDynamic = frame.command === 'P52' && frame.params[0] === '3';
 
+        // P01 answers "<firmware string>,<battery>%" — worth keeping on the
+        // device record: it determines which commands the unit supports.
+        if (frame.command === 'P01' && frame.params[0]) {
+          await store.recordFirmware(frame.deviceId, frame.params[0]);
+        }
+
         let ok = true;
         if (isStatic || isDynamic) {
           const success = isStatic ? frame.params[0] : frame.params[1];

@@ -204,9 +204,19 @@ label { font-size: .85rem; color: var(--muted); }
 .stat-label { display: block; font-size: .72rem; color: var(--muted); }
 .stat-value { display: block; font-size: 1.05rem; font-weight: 600; margin-block-start: .15rem; }
 
-.kv { display: grid; grid-template-columns: auto 1fr; gap: .45rem .9rem; margin: 0; font-size: .85rem; }
+.kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .45rem .9rem; margin: 0; font-size: .85rem; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; }
+.break { overflow-wrap: anywhere; }
+
+.hw { margin-block-start: 1rem; }
+.hw summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: .82rem;
+  padding-block: .4rem;
+}
+.hw[open] summary { margin-block-end: .5rem; }
 
 .alarms {
   margin-block: 1rem;
