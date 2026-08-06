@@ -37,6 +37,8 @@ html, body {
   color: var(--text);
   font-family: var(--font);
   font-size: 15px;
+  /* The page must never scroll sideways; panes scroll inside themselves. */
+  overflow-x: hidden;
 }
 
 /* Latin numerals for technical data, even in Arabic text. */
@@ -116,10 +118,18 @@ label { font-size: .85rem; color: var(--muted); }
 
 .layout {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: 320px minmax(0, 1fr);
   block-size: calc(100vh - 57px);
+  max-inline-size: 100%;
 }
-.layout:has(.detail:not([hidden])) { grid-template-columns: 320px 1fr 360px; }
+.layout:has(.detail:not([hidden])) { grid-template-columns: 320px minmax(0, 1fr) 360px; }
+
+/*
+ * Grid children default to min-width:auto, so a wide child - MapLibre's canvas
+ * being the obvious one - forces its track past 1fr and pushes the whole grid
+ * beyond the viewport, clipping the sidebar off the edge of the screen.
+ */
+.sidebar, .map-pane, .detail { min-inline-size: 0; }
 
 .sidebar {
   background: var(--surface);
