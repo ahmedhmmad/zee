@@ -131,10 +131,16 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     const id = deviceIdOf(req, reply);
     if (!id) return reply;
 
-    const { reason } = (req.body ?? {}) as { reason?: string };
+    const { reason, ttlMinutes } = (req.body ?? {}) as { reason?: string; ttlMinutes?: number };
     if (!reason || reason.trim().length < 3) {
       return reply.code(400).send({ error: 'reason_required' });
     }
+
+    // How long the authorisation stays live. Devices sleep for up to 30
+    // minutes between RTC wakes, so a short window can expire before the truck
+    // is ever reachable — but an unbounded one could fire hours later
+    // somewhere else entirely. Operator chooses, within a hard ceiling.
+    const ttl = Math.min(Math.max(Number(ttlMinutes) || 30, 5), 240);
 
     const { rows } = await pool.query<{ static_password: string; is_connected: boolean | null }>(
       `SELECT d.static_password, s.is_connected
@@ -147,13 +153,19 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
 
     const { rows: inserted } = await pool.query<{ id: number }>(
       `INSERT INTO commands (device_id, command_type, payload, requested_by, reason, status, expires_at)
-       VALUES ($1, 'unlock_static', $2, $3, $4, 'queued', now() + interval '30 minutes')
+       VALUES ($1, 'unlock_static', $2, $3, $4, 'queued', now() + ($5 || ' minutes')::interval)
        RETURNING id`,
-      [id, `(P43,${device.static_password})`, actorOf(req), reason.trim()],
+      [id, `(P43,${device.static_password})`, actorOf(req), reason.trim(), ttl],
     );
 
     const commandId = inserted[0]!.id;
-    await audit(req, 'unlock_requested', id, { reason: reason.trim(), online: device.is_connected }, commandId);
+    await audit(
+      req,
+      'unlock_requested',
+      id,
+      { reason: reason.trim(), online: device.is_connected, ttlMinutes: ttl },
+      commandId,
+    );
 
     // Deliberately not reporting success: the command is queued, and only the
     // device's own P45 report can confirm the lock actually opened.

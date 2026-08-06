@@ -110,6 +110,18 @@
     <label for="unlock-reason">سبب الفتح (إلزامي)</label>
     <input type="text" id="unlock-reason" required minlength="3"
            placeholder="مثال: تفريغ الحمولة في محطة الوقود" />
+
+    <label for="unlock-ttl">مدة صلاحية الأمر</label>
+    <select id="unlock-ttl">
+      <option value="15">15 دقيقة — الجهاز متصل الآن</option>
+      <option value="30" selected>30 دقيقة</option>
+      <option value="120">ساعتان — الجهاز نائم أو المركبة متوقفة</option>
+    </select>
+    <p class="muted">
+      إذا لم يستيقظ الجهاز خلال هذه المدة يُلغى الأمر تلقائياً، حتى لا يُنفَّذ
+      لاحقاً في مكان آخر.
+    </p>
+
     <div class="modal-actions">
       <button type="button" class="btn btn-ghost" id="unlock-cancel">إلغاء</button>
       <button type="submit" class="btn btn-danger">تأكيد الفتح</button>

@@ -525,7 +525,7 @@ $('unlock-form').addEventListener('submit', async (e) => {
   try {
     const result = await api(`/api/devices/${deviceId}/unlock`, {
       method: 'POST',
-      body: JSON.stringify({ reason }),
+      body: JSON.stringify({ reason, ttlMinutes: Number($('unlock-ttl').value) }),
     });
     // Deliberately not "unlocked": the command is queued, and a sleeping
     // device may take minutes to receive it.

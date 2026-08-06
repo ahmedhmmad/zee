@@ -332,3 +332,15 @@ label { font-size: .85rem; color: var(--muted); }
     border: none;
   }
 }
+
+select {
+  inline-size: 100%;
+  padding: .6rem .8rem;
+  margin-block: .35rem .5rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: .9rem;
+}
