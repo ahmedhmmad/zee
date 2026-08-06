@@ -70,28 +70,43 @@ ls -lh libya.pmtiles
 # glyph ranges. Base Noto Sans has no Arabic coverage, so Noto Sans Arabic is
 # merged in - without it, every Arabic place name renders as blank boxes.
 
-if [ ! -d glyphs/"Noto Sans Regular" ]; then
-  echo "==> building glyphs (Latin + Arabic)"
-  mkdir -p fonts
-  curl -fsSL -o fonts/NotoSans-Regular.ttf \
-    "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf"
-  curl -fsSL -o fonts/NotoSansArabic-Regular.ttf \
-    "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansArabic/NotoSansArabic-Regular.ttf"
+STACK="Noto Sans Regular"
+GLYPH_BASE="https://raw.githubusercontent.com/protomaps/basemaps-assets/main/fonts"
 
-  # font-maker writes one PBF per 256-codepoint range; later fonts fill gaps
-  # left by earlier ones, so Latin comes from Noto Sans and Arabic from
-  # Noto Sans Arabic.
-  npx --yes @maplibre/font-maker@latest \
-    --name "Noto Sans Regular" \
-    --output glyphs \
-    fonts/NotoSans-Regular.ttf fonts/NotoSansArabic-Regular.ttf
+if [ ! -f "glyphs/${STACK}/1536-1791.pbf" ]; then
+  echo "==> fetching glyph ranges (Latin + Arabic)"
+  mkdir -p "glyphs/${STACK}"
 
-  # Arabic lives at U+0600-06FF, which is the 1536-1791 range.
-  if [ -f "glyphs/Noto Sans Regular/1536-1791.pbf" ]; then
-    echo "    Arabic glyph range present"
-  else
-    echo "    WARNING: Arabic glyph range missing — labels will render as boxes" >&2
-  fi
+  # MapLibre asks for one 256-codepoint range at a time. Only the ranges the
+  # labels actually use are needed; anything absent upstream is skipped.
+  #   0-255       Basic Latin + Latin-1
+  #   256-767     Latin Extended A/B
+  #   768-1023    Combining marks, Greek
+  #   1536-2047   Arabic, Arabic Supplement   <- the ones that matter here
+  #   8192-8447   General punctuation
+  #   64256-65279 Arabic Presentation Forms A/B
+  ranges="0-255 256-511 512-767 768-1023 1024-1279 1280-1535 1536-1791 1792-2047 \
+          8192-8447 8448-8703 64256-64511 65024-65279"
+
+  got=0
+  for r in $ranges; do
+    if curl -fsSL -o "glyphs/${STACK}/${r}.pbf" \
+        "${GLYPH_BASE}/$(printf %s "$STACK" | sed 's/ /%20/g')/${r}.pbf" 2>/dev/null; then
+      got=$((got + 1))
+    else
+      rm -f "glyphs/${STACK}/${r}.pbf"
+    fi
+  done
+  echo "    fetched ${got} glyph ranges"
+fi
+
+# Arabic is U+0600-06FF, the 1536-1791 range. Without it every Arabic place
+# name renders as empty boxes, so this is worth checking explicitly.
+if [ -s "glyphs/${STACK}/1536-1791.pbf" ]; then
+  echo "    Arabic glyph range present ($(stat -c%s "glyphs/${STACK}/1536-1791.pbf") bytes)"
+else
+  echo "    WARNING: no Arabic glyphs — labels will render as boxes." >&2
+  echo "    The map still works; tell me and I will source them elsewhere." >&2
 fi
 
 echo "==> done"
