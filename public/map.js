@@ -85,7 +85,7 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
 
   const markers = new Map();
   const destinations = new Map();
-  let trail = null;
+  let trailLines = [];
   let routeLine = null;
   let directionsService = null;
 
@@ -242,21 +242,28 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
       routeLine?.setPath([]);
     },
 
-    /** The road actually driven, from our own stored positions. */
-    setTrail(coords) {
-      if (!trail) {
-        trail = new google.maps.Polyline({
-          map,
-          strokeColor: '#57c795',
-          strokeOpacity: 0.85,
-          strokeWeight: 3,
-          zIndex: 0,
-        });
-      }
-      trail.setPath(coords.map(([lat, lon]) => ({ lat, lng: lon })));
+    /**
+     * Roads actually driven, from our own stored positions. Takes an array of
+     * segments so separate journeys stay separate - joining the end of one
+     * trip to the start of the next would draw a road nobody drove.
+     */
+    setTrail(segments) {
+      for (const line of trailLines) line.setMap(null);
+      trailLines = segments.map(
+        (coords) =>
+          new google.maps.Polyline({
+            map,
+            path: coords.map(([lat, lon]) => ({ lat, lng: lon })),
+            strokeColor: '#57c795',
+            strokeOpacity: 0.85,
+            strokeWeight: 3,
+            zIndex: 0,
+          }),
+      );
     },
     clearTrail() {
-      trail?.setPath([]);
+      for (const line of trailLines) line.setMap(null);
+      trailLines = [];
     },
     flyTo(lat, lon, zoom = 15) {
       map.panTo({ lat, lng: lon });
@@ -384,13 +391,16 @@ function createOsmMap(container, onMarkerClick) {
     },
     setRoutePath() {},
     clearRoute() {},
-    setTrail(coords) {
+    setTrail(segments) {
       const data = {
         type: 'FeatureCollection',
-        features: coords.length
+        features: segments.length
           ? [{
               type: 'Feature',
-              geometry: { type: 'LineString', coordinates: coords.map(([lat, lon]) => [lon, lat]) },
+              geometry: {
+                type: 'MultiLineString',
+                coordinates: segments.map((coords) => coords.map(([lat, lon]) => [lon, lat])),
+              },
             }]
           : [],
       };

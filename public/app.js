@@ -856,22 +856,55 @@ async function loadHistory() {
   if (!historyMap) return;
   const deviceId = $('hist-device').value;
   const hours = Number($('hist-range').value);
+  const mode = $('hist-mode').value;
   if (!deviceId) return;
 
   const points = await api(`/api/devices/${deviceId}/track?hours=${hours}`).catch(() => []);
-  const path = dropStationaryDrift(points.map((p) => [p.latitude, p.longitude]));
-  historyMap.setTrail(path);
 
-  const last = path[path.length - 1];
+  // "Towards a destination" has a precise meaning here: the window between an
+  // arrival rule being armed and it firing (or expiring). Movement inside
+  // those windows is a delivery; everything else is the driver's own business
+  // and is only shown when the operator explicitly asks for everything.
+  let segments;
+  let summary;
+  if (mode === 'all') {
+    const path = dropStationaryDrift(points.map((p) => [p.latitude, p.longitude]));
+    segments = path.length > 1 ? [path] : [];
+    summary = path.length ? `كل التحركات — ${points.length} نقطة خلال ${hours} ساعة` : '';
+  } else {
+    const arrivals = await api(`/api/devices/${deviceId}/arrivals`).catch(() => []);
+    const windows = arrivals.map((a) => [
+      new Date(a.created_at),
+      new Date(a.triggered_at ?? a.expires_at),
+    ]);
+    segments = windows
+      .map(([start, end]) =>
+        dropStationaryDrift(
+          points
+            .filter((p) => {
+              const t = new Date(p.reported_at);
+              return t >= start && t <= end;
+            })
+            .map((p) => [p.latitude, p.longitude]),
+        ),
+      )
+      .filter((seg) => seg.length > 1);
+    summary = segments.length
+      ? `${segments.length} رحلة توصيل خلال ${hours} ساعة`
+      : 'لا توجد رحلات توصيل في هذه الفترة — اختر «كل التحركات» لعرض المسار كاملاً';
+  }
+
+  historyMap.setTrail(segments);
+
+  const lastSegment = segments[segments.length - 1];
+  const last = lastSegment?.[lastSegment.length - 1];
   if (last) {
     historyMap.setMarker(deviceId, last[0], last[1], { title: '', kind: 'locked', moving: false });
     historyMap.flyTo(last[0], last[1], 12);
   } else {
     historyMap.removeMarker(deviceId);
   }
-  $('history-summary').textContent = path.length
-    ? `${points.length} نقطة مسجّلة خلال ${hours} ساعة`
-    : 'لا توجد بيانات مسار في هذه الفترة';
+  $('history-summary').textContent = summary || 'لا توجد بيانات مسار في هذه الفترة';
 
   // Lock activity for the same window, so the review reads as one story:
   // where it drove, and what the lock did along the way.
@@ -899,6 +932,7 @@ $('open-history').addEventListener('click', openHistory);
 $('close-history').addEventListener('click', () => ($('history-page').hidden = true));
 $('hist-device').addEventListener('change', loadHistory);
 $('hist-range').addEventListener('change', loadHistory);
+$('hist-mode').addEventListener('change', loadHistory);
 
 let toastTimer;
 function toast(message, kind) {
