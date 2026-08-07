@@ -35,6 +35,7 @@
       <span>منظومة أقفال الشاحنات</span>
     </div>
     <div class="topbar-end">
+      <button id="open-history" class="btn btn-ghost">🕘 الرحلات السابقة</button>
       <button id="open-locations" class="btn btn-ghost">📍 المواقع</button>
       <button id="map-theme" class="btn btn-ghost" hidden
               title="تبديل مظهر الخريطة بين الداكن والفاتح"></button>
@@ -143,6 +144,36 @@
       <ul id="event-list" class="feed"></ul>
     </aside>
   </main>
+</div>
+
+<!-- سجل الرحلات -->
+<div id="history-page" class="page" hidden>
+  <div class="page-head">
+    <h2>الرحلات السابقة</h2>
+    <button id="close-history" class="btn btn-ghost">رجوع</button>
+  </div>
+
+  <div class="history-controls">
+    <div>
+      <label for="hist-device">المركبة</label>
+      <select id="hist-device"></select>
+    </div>
+    <div>
+      <label for="hist-range">الفترة</label>
+      <select id="hist-range">
+        <option value="12" selected>آخر 12 ساعة</option>
+        <option value="24">آخر 24 ساعة</option>
+        <option value="48">آخر يومين</option>
+        <option value="72">آخر 3 أيام</option>
+      </select>
+    </div>
+    <p id="history-summary" class="muted"></p>
+  </div>
+
+  <div id="history-map"></div>
+
+  <h3>أحداث القفل في نفس الفترة</h3>
+  <ul id="history-events" class="feed history-feed"></ul>
 </div>
 
 <!-- إدارة المواقع -->

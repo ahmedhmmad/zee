@@ -417,12 +417,7 @@ async function renderDetail() {
     : '';
 
   $('unlock-btn').disabled = false;
-  await Promise.all([
-    loadCommands(d.device_id),
-    loadEvents(d.device_id),
-    loadArrivals(d.device_id),
-    loadTrail(d.device_id),
-  ]);
+  await Promise.all([loadCommands(d.device_id), loadEvents(d.device_id), loadArrivals(d.device_id)]);
 }
 
 async function loadCommands(deviceId) {
@@ -518,7 +513,7 @@ function selectDevice(deviceId) {
 
 $('detail-close').addEventListener('click', () => {
   state.map?.clearDestinations?.();
-  state.map?.clearTrail?.();
+  state.map?.clearRoute?.();
   state.selectedId = null;
   $('detail').hidden = true;
   renderDeviceList();
@@ -652,13 +647,6 @@ async function loadArrivals(deviceId) {
 const formatDistance = (m) =>
   Number(m) >= 1000 ? `${(Number(m) / 1000).toFixed(1)} كم` : `${Math.round(Number(m))} م`;
 
-/**
- * Draw the road the vehicle actually drove, from stored positions.
- *
- * This is the path that matters operationally: a straight line to the
- * destination says where the truck should end up, but the trail shows where it
- * has been - which is what reveals an unscheduled stop or a detour.
- */
 /** Metres between two coordinates. Flat-earth approximation, fine at this scale. */
 function metresBetween([lat1, lon1], [lat2, lon2]) {
   const dLat = (lat2 - lat1) * 111320;
@@ -686,32 +674,49 @@ function dropStationaryDrift(points, minMetres = 25) {
   return kept;
 }
 
-async function loadTrail(deviceId) {
-  if (!state.map?.setTrail) return;
-  try {
-    const points = await api(`/api/devices/${deviceId}/track?hours=12`);
-    state.map.setTrail(dropStationaryDrift(points.map((p) => [p.latitude, p.longitude])));
-  } catch {
-    state.map.clearTrail?.();
-  }
-}
-
 /**
  * Only armed destinations for the selected vehicle are drawn. Showing every
  * rule for every truck at once would bury the one the operator is watching.
+ *
+ * The blue line is a real driving route from Google Directions. Routes are
+ * billed per request and a refresh arrives with every position report, so the
+ * computed path is cached and only re-requested once the vehicle has moved
+ * well away from where the last one was calculated.
  */
-function drawDestinations(deviceId, arrivals) {
+const routeCache = new Map(); // arrivalId -> { lat, lon, path }
+
+async function drawDestinations(deviceId, arrivals) {
   if (!state.map?.setDestination) return;
   state.map.clearDestinations();
+  state.map.clearRoute?.();
 
   const device = state.devices.find((d) => d.device_id === deviceId);
   const from = device && hasLocation(device) ? { lat: device.latitude, lon: device.longitude } : null;
 
   for (const a of arrivals.filter((x) => x.is_armed)) {
+    let routed = false;
+
+    if (from && state.map.fetchRoute) {
+      const cached = routeCache.get(a.id);
+      let path =
+        cached && metresBetween([cached.lat, cached.lon], [from.lat, from.lon]) < 500
+          ? cached.path
+          : null;
+      if (!path) {
+        path = await state.map.fetchRoute(from, { lat: a.latitude, lon: a.longitude });
+        if (path) routeCache.set(a.id, { lat: from.lat, lon: from.lon, path });
+      }
+      if (path) {
+        state.map.setRoutePath(path);
+        routed = true;
+      }
+    }
+
+    // The dashed straight line is only the fallback when no road route exists.
     state.map.setDestination(`arrival-${a.id}`, a.latitude, a.longitude, {
       radiusM: a.radius_m,
       label: a.name,
-      from,
+      from: routed ? null : from,
     });
   }
 }
@@ -823,6 +828,77 @@ $('location-form').addEventListener('submit', async (e) => {
     toast(String(err.message) === 'name_taken' ? 'الاسم مستخدم بالفعل' : 'تعذّرت إضافة الموقع', 'bad');
   }
 });
+
+// --- Trip history page ------------------------------------------------------
+
+let historyMap = null;
+
+async function openHistory() {
+  $('history-page').hidden = false;
+
+  const sel = $('hist-device');
+  sel.innerHTML = state.devices
+    .map((d) => `<option value="${d.device_id}">${escapeHtml(d.name)}</option>`)
+    .join('');
+  if (state.selectedId) sel.value = state.selectedId;
+
+  // Its own map instance: past travel is a review activity, and drawing it on
+  // the live map buried the present under the past.
+  if (!historyMap) {
+    const { googleMapsApiKey } = await api('/api/config');
+    const { createMap } = await import('/map.js');
+    historyMap = await createMap($('history-map'), googleMapsApiKey, () => {}, mapTheme());
+  }
+  loadHistory();
+}
+
+async function loadHistory() {
+  if (!historyMap) return;
+  const deviceId = $('hist-device').value;
+  const hours = Number($('hist-range').value);
+  if (!deviceId) return;
+
+  const points = await api(`/api/devices/${deviceId}/track?hours=${hours}`).catch(() => []);
+  const path = dropStationaryDrift(points.map((p) => [p.latitude, p.longitude]));
+  historyMap.setTrail(path);
+
+  const last = path[path.length - 1];
+  if (last) {
+    historyMap.setMarker(deviceId, last[0], last[1], { title: '', kind: 'locked', moving: false });
+    historyMap.flyTo(last[0], last[1], 12);
+  } else {
+    historyMap.removeMarker(deviceId);
+  }
+  $('history-summary').textContent = path.length
+    ? `${points.length} نقطة مسجّلة خلال ${hours} ساعة`
+    : 'لا توجد بيانات مسار في هذه الفترة';
+
+  // Lock activity for the same window, so the review reads as one story:
+  // where it drove, and what the lock did along the way.
+  const since = Date.now() - hours * 3600 * 1000;
+  const events = (await api(`/api/devices/${deviceId}/events`).catch(() => [])).filter(
+    (e) => new Date(e.reported_at) >= since,
+  );
+  $('history-events').innerHTML = events.length
+    ? events
+        .map((e) => {
+          const notes = [];
+          if (e.requested_by) notes.push(`بأمر من ${e.requested_by}`);
+          if (e.rfid_card) notes.push(`البطاقة ${e.rfid_card}`);
+          return `<li class="${e.unlock_allowed ? 'ok' : ''}">
+            <div>${EVENT_NAMES[e.event_source_name] ?? e.event_source_name}</div>
+            ${notes.length ? `<div class="muted">${notes.map(escapeHtml).join(' · ')}</div>` : ''}
+            <div class="when">${fmtDateTime(e.reported_at)}</div>
+          </li>`;
+        })
+        .join('')
+    : '<li class="empty">لا توجد أحداث في هذه الفترة</li>';
+}
+
+$('open-history').addEventListener('click', openHistory);
+$('close-history').addEventListener('click', () => ($('history-page').hidden = true));
+$('hist-device').addEventListener('change', loadHistory);
+$('hist-range').addEventListener('change', loadHistory);
 
 let toastTimer;
 function toast(message, kind) {

@@ -86,6 +86,8 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
   const markers = new Map();
   const destinations = new Map();
   let trail = null;
+  let routeLine = null;
+  let directionsService = null;
 
   /**
    * google.maps.Marker is deprecated in favour of AdvancedMarkerElement, but
@@ -201,6 +203,43 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
         d.line.setMap(null);
       }
       destinations.clear();
+    },
+
+    /**
+     * A real driving route from Google Directions, drawn solid blue so it
+     * cannot be confused with the amber straight-line fallback. Returns the
+     * path so the caller can cache it - Directions requests are billed, and
+     * re-routing on every position report would add up fast.
+     */
+    async fetchRoute(from, to) {
+      try {
+        directionsService ??= new google.maps.DirectionsService();
+        const res = await directionsService.route({
+          origin: { lat: from.lat, lng: from.lon },
+          destination: { lat: to.lat, lng: to.lon },
+          travelMode: google.maps.TravelMode.DRIVING,
+        });
+        const path = res.routes?.[0]?.overview_path;
+        return path?.length ? path.map((p) => ({ lat: p.lat(), lng: p.lng() })) : null;
+      } catch (err) {
+        // Most likely the Directions API is not enabled on this key. The
+        // dashed straight line still works, so degrade quietly.
+        console.info('[map] road route unavailable, using straight line', err?.code ?? err);
+        return null;
+      }
+    },
+    setRoutePath(path) {
+      routeLine ??= new google.maps.Polyline({
+        map,
+        strokeColor: '#4a9eda',
+        strokeOpacity: 0.9,
+        strokeWeight: 4,
+        zIndex: 2,
+      });
+      routeLine.setPath(path);
+    },
+    clearRoute() {
+      routeLine?.setPath([]);
     },
 
     /** The road actually driven, from our own stored positions. */
@@ -340,6 +379,11 @@ function createOsmMap(container, onMarkerClick) {
         map.getSource('destinations').setData({ type: 'FeatureCollection', features: [] });
       }
     },
+    async fetchRoute() {
+      return null; // no routing without Google; dashed straight line remains
+    },
+    setRoutePath() {},
+    clearRoute() {},
     setTrail(coords) {
       const data = {
         type: 'FeatureCollection',

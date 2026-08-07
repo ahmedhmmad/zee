@@ -423,3 +423,25 @@ select {
 .truck-arrow { display: inline-block; font-size: 15px; line-height: 1; transition: transform .3s ease; }
 .truck-marker.moving { background: var(--accent); }
 .truck-marker:not(.moving) .truck-arrow { opacity: .85; }
+
+/* --- Trip history page ---------------------------------------------------- */
+
+.history-controls {
+  display: flex;
+  align-items: end;
+  gap: .8rem;
+  flex-wrap: wrap;
+  margin-block: 1rem;
+}
+.history-controls > div { min-inline-size: 180px; }
+.history-controls select { margin-block-end: 0; }
+.history-controls p { margin: 0 0 .5rem; }
+
+#history-map {
+  block-size: 55vh;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.history-feed { max-inline-size: 720px; }
