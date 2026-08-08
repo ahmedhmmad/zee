@@ -131,8 +131,14 @@ const ALARM_NAMES = {
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
     ...options,
+    headers: {
+      // Only declare a JSON body when there is one. Sending the header with an
+      // empty body - as every DELETE did - makes Fastify try to parse nothing
+      // as JSON and answer 400.
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...options.headers,
+    },
   });
   if (res.status === 401) {
     // Send the operator back to the login screen rather than leaving a stale,
@@ -634,8 +640,14 @@ async function loadArrivals(deviceId) {
 
     for (const btn of list.querySelectorAll('[data-disarm]')) {
       btn.addEventListener('click', async () => {
-        await api(`/api/devices/${deviceId}/arrivals/${btn.dataset.disarm}`, { method: 'DELETE' });
-        toast('تم إلغاء الفتح التلقائي', 'ok');
+        // Surface failures to the operator. Cancelling an automatic unlock is
+        // exactly the action that must not fail quietly.
+        try {
+          await api(`/api/devices/${deviceId}/arrivals/${btn.dataset.disarm}`, { method: 'DELETE' });
+          toast('تم إلغاء الفتح التلقائي', 'ok');
+        } catch {
+          toast('تعذّر الإلغاء — حاول مرة أخرى', 'bad');
+        }
         loadArrivals(deviceId);
       });
     }
@@ -787,8 +799,12 @@ async function loadLocations() {
 
   for (const btn of list.querySelectorAll('[data-del-loc]')) {
     btn.addEventListener('click', async () => {
-      await api(`/api/locations/${btn.dataset.delLoc}`, { method: 'DELETE' });
-      toast('تم حذف الموقع', 'ok');
+      try {
+        await api(`/api/locations/${btn.dataset.delLoc}`, { method: 'DELETE' });
+        toast('تم حذف الموقع', 'ok');
+      } catch {
+        toast('تعذّر حذف الموقع', 'bad');
+      }
       loadLocations();
     });
   }

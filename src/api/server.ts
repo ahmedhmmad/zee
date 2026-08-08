@@ -27,6 +27,23 @@ const app = Fastify({
   trustProxy: true,
 });
 
+/**
+ * Treat an empty body as an empty object.
+ *
+ * Fastify's default JSON parser rejects a zero-length body with 400, so any
+ * client that sets Content-Type on a bodyless DELETE gets a confusing "Bad
+ * Request" for a perfectly valid call. Being tolerant here means one careless
+ * header cannot break an endpoint.
+ */
+app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
+  if (!body || (body as string).trim() === '') return done(null, {});
+  try {
+    done(null, JSON.parse(body as string));
+  } catch (err) {
+    done(err as Error);
+  }
+});
+
 await app.register(fastifyCookie, { secret: apiConfig.cookieSecret });
 await app.register(fastifyWebsocket);
 await app.register(fastifyStatic, { root: publicDir });
