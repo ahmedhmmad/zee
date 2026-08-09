@@ -64,6 +64,20 @@ function sanitise(s: string): string {
  *
  * Returns true when the row was new.
  */
+/**
+ * Coordinates for storage, or null when the device had no fix.
+ *
+ * A device without a fix reports 0,0 — a real point in the Gulf of Guinea.
+ * Storing that as a position is a lie: it is not where the truck is, and it
+ * contaminates every distance, track and report downstream. Absence of a fix
+ * is absence of a position, and NULL says so.
+ */
+function locationOf(p: PositionFrame): { lon: number; lat: number } | null {
+  if (!p.positioned) return null;
+  if (Math.abs(p.latitude) < 0.0001 && Math.abs(p.longitude) < 0.0001) return null;
+  return { lon: p.longitude, lat: p.latitude };
+}
+
 export async function insertPosition(p: PositionFrame, db: Db = pool): Promise<boolean> {
   const { rowCount } = await db.query(
     `INSERT INTO positions (
@@ -72,15 +86,18 @@ export async function insertPosition(p: PositionFrame, db: Db = pool): Promise<b
        rope_inserted, status_flags, data_type, is_alarm, is_historical,
        gsm_signal, wake_source, mcc, mnc, cell_id, lac, serial
      ) VALUES (
-       $1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6, $7,
+       $1, $2,
+       CASE WHEN $3::double precision IS NULL THEN NULL
+            ELSE ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography END,
+       $5, $6, $7,
        $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
      )
      ON CONFLICT (device_id, reported_at, serial) DO NOTHING`,
     [
       p.deviceId,
       p.reportedAt,
-      p.longitude, // ST_MakePoint takes (x=lon, y=lat)
-      p.latitude,
+      locationOf(p)?.lon ?? null, // ST_MakePoint takes (x=lon, y=lat)
+      locationOf(p)?.lat ?? null,
       p.positioned,
       p.speedKph,
       p.headingDeg,
@@ -125,13 +142,19 @@ export async function updateDeviceState(p: PositionFrame, db: Db = pool): Promis
        motor_locked, rope_inserted, gsm_signal, wake_source, active_alarms,
        mileage_km, mcc, mnc, is_connected, updated_at
      ) VALUES (
-       $1, now(), $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5,
+       $1, now(), $2,
+       CASE WHEN $3::double precision IS NULL THEN NULL
+            ELSE ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography END,
+       $5,
        $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, true, now()
      )
      ON CONFLICT (device_id) DO UPDATE SET
        last_seen_at     = now(),
        last_position_at = EXCLUDED.last_position_at,
-       location         = EXCLUDED.location,
+       -- Keep the last known good fix when the new report has none: a truck
+       -- in a tunnel is still somewhere, and that somewhere is the last
+       -- place we saw it. The positioned flag below marks it as stale.
+       location         = COALESCE(EXCLUDED.location, device_state.location),
        positioned       = EXCLUDED.positioned,
        speed_kph        = EXCLUDED.speed_kph,
        heading_deg      = EXCLUDED.heading_deg,
@@ -153,8 +176,8 @@ export async function updateDeviceState(p: PositionFrame, db: Db = pool): Promis
     [
       p.deviceId,
       p.reportedAt,
-      p.longitude,
-      p.latitude,
+      locationOf(p)?.lon ?? null,
+      locationOf(p)?.lat ?? null,
       p.positioned,
       p.speedKph,
       p.headingDeg,
