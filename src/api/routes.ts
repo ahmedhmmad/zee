@@ -61,6 +61,9 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     const { rows } = await pool.query(`
       SELECT d.device_id, d.name, d.plate_number, d.model,
              d.imei, d.firmware_version, d.sim_msisdn,
+             -- Never send the password itself to the browser; only whether
+             -- it is still one of the well-known factory defaults.
+             (d.static_password IN ('888888', '123456')) AS static_password_is_default,
              s.last_seen_at, s.last_position_at, s.is_connected, s.connected_at,
              ST_Y(s.location::geometry) AS latitude,
              ST_X(s.location::geometry) AS longitude,
@@ -230,6 +233,176 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
       status: 'queued',
       deviceOnline: device.is_connected === true,
     };
+  });
+
+  // --- Device administration ----------------------------------------------
+
+  /**
+   * Device IDs that have tried to connect and been refused.
+   *
+   * Fitting a lock and pointing it at the gateway is enough to get it listed
+   * here; the ID does not have to be read off a label and typed in.
+   */
+  app.get('/api/unknown-devices', async () => {
+    const { rows } = await pool.query(
+      `SELECT r.device_id, count(*)::int AS attempts,
+              min(r.at) AS first_seen, max(r.at) AS last_seen,
+              max(r.remote_ip::text) AS remote_ip
+         FROM rejected_frames r
+        WHERE r.device_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.device_id = r.device_id)
+          AND r.at > now() - interval '7 days'
+        GROUP BY r.device_id
+        ORDER BY max(r.at) DESC
+        LIMIT 20`,
+    );
+    return rows;
+  });
+
+  app.post('/api/devices', async (req, reply) => {
+    const b = (req.body ?? {}) as {
+      deviceId?: string;
+      name?: string;
+      plateNumber?: string;
+      model?: string;
+      staticPassword?: string;
+    };
+
+    const deviceId = (b.deviceId ?? '').trim();
+    const name = (b.name ?? '').trim();
+    if (!DEVICE_ID.test(deviceId)) return reply.code(400).send({ error: 'invalid_device_id' });
+    if (name.length < 2) return reply.code(400).send({ error: 'name_required' });
+
+    try {
+      await pool.query(
+        `INSERT INTO devices (device_id, name, plate_number, model, static_password)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          deviceId,
+          name,
+          b.plateNumber?.trim() || null,
+          b.model?.trim() || 'JT701D',
+          // Factory default unless told otherwise. Rotating it is a separate,
+          // device-confirmed step rather than something typed in blind here.
+          (b.staticPassword ?? '').trim() || '888888',
+        ],
+      );
+    } catch (err) {
+      if ((err as { code?: string }).code === '23505') {
+        return reply.code(409).send({ error: 'device_exists' });
+      }
+      throw err;
+    }
+
+    await audit(req, 'device_added', deviceId, { name, plateNumber: b.plateNumber });
+    return { deviceId };
+  });
+
+  app.patch('/api/devices/:id', async (req, reply) => {
+    const id = deviceIdOf(req, reply);
+    if (!id) return reply;
+    const b = (req.body ?? {}) as { name?: string; plateNumber?: string; isActive?: boolean };
+
+    await pool.query(
+      `UPDATE devices
+          SET name = COALESCE(NULLIF($2, ''), name),
+              plate_number = COALESCE(NULLIF($3, ''), plate_number),
+              is_active = COALESCE($4, is_active)
+        WHERE device_id = $1`,
+      [id, b.name?.trim() ?? '', b.plateNumber?.trim() ?? '', b.isActive ?? null],
+    );
+    await audit(req, 'device_updated', id, { ...b });
+    return { ok: true };
+  });
+
+  /**
+   * Rotate the static password.
+   *
+   * The stored password is NOT changed here. The command carries the new one
+   * in metadata, and the gateway adopts it only once the device confirms -
+   * because updating first and failing to reach the device would leave the
+   * platform holding a password the lock does not have.
+   */
+  app.post('/api/devices/:id/password', async (req, reply) => {
+    const id = deviceIdOf(req, reply);
+    if (!id) return reply;
+
+    const { newPassword } = (req.body ?? {}) as { newPassword?: string };
+    const next = (newPassword ?? '').trim();
+    // The manual specifies six characters: digits, letters or symbols.
+    if (!/^[\x21-\x7e]{6}$/.test(next)) {
+      return reply.code(400).send({ error: 'password_must_be_6_chars' });
+    }
+    if (next === '888888' || next === '123456') {
+      return reply.code(400).send({ error: 'password_too_common' });
+    }
+
+    const { rows } = await pool.query<{ static_password: string }>(
+      'SELECT static_password FROM devices WHERE device_id = $1',
+      [id],
+    );
+    const current = rows[0]?.static_password;
+    if (!current) return reply.code(404).send({ error: 'device_not_found' });
+
+    const { rows: inserted } = await pool.query<{ id: number }>(
+      `INSERT INTO commands (device_id, command_type, payload, requested_by, reason, status, expires_at, metadata)
+       VALUES ($1, 'set_password', $2, $3, 'rotate static password', 'queued',
+               now() + interval '4 hours', $4)
+       RETURNING id`,
+      [id, `(P44,${next},${current})`, actorOf(req), JSON.stringify({ newPassword: next })],
+    );
+
+    await audit(req, 'password_rotation_requested', id, {}, inserted[0]!.id);
+    return { commandId: inserted[0]!.id };
+  });
+
+  /**
+   * Ask the device for its own static password.
+   *
+   * `(P44,1)` is answerable only over the platform TCP channel, which is why
+   * this works at all — and it is how both existing devices' passwords were
+   * recovered rather than guessed.
+   */
+  app.post('/api/devices/:id/read-password', async (req, reply) => {
+    const id = deviceIdOf(req, reply);
+    if (!id) return reply;
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO commands (device_id, command_type, payload, requested_by, reason, status, expires_at)
+       VALUES ($1, 'query_password', '(P44,1)', $2, 'read static password', 'queued',
+               now() + interval '12 hours')
+       RETURNING id`,
+      [id, actorOf(req)],
+    );
+    await audit(req, 'password_read_requested', id, {}, rows[0]!.id);
+    return { commandId: rows[0]!.id };
+  });
+
+  /** The standard commissioning sequence, queued in order. */
+  app.post('/api/devices/:id/commission', async (req, reply) => {
+    const id = deviceIdOf(req, reply);
+    if (!id) return reply;
+
+    // Deliberately excludes P59 unlock-channel lockdown: that closes the SMS
+    // route people rely on as a fallback, and should be a conscious separate
+    // decision once remote unlocking is proven on the unit.
+    const steps: Array<[string, string, string]> = [
+      ['query_firmware', '(P01)', 'firmware and battery'],
+      ['set_timezone', '(P10,1,120)', 'Libya is UTC+2'],
+      ['set_intervals', '(P04,1,60,30)', '60s awake, 30min RTC wake'],
+      ['set_p45_fields', '(P94,1,3)', 'IMEI and fence ID in lock reports'],
+      ['query_channels', '(P59,0)', 'read unlock channel settings'],
+    ];
+
+    for (const [type, payload, reason] of steps) {
+      await pool.query(
+        `INSERT INTO commands (device_id, command_type, payload, requested_by, reason, status, expires_at)
+         VALUES ($1, $2, $3, $4, $5, 'queued', now() + interval '12 hours')`,
+        [id, type, payload, actorOf(req), reason],
+      );
+    }
+
+    await audit(req, 'commissioning_queued', id, { steps: steps.length });
+    return { queued: steps.length };
   });
 
   // --- Locations catalogue ------------------------------------------------

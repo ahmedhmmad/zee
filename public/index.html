@@ -36,6 +36,7 @@
     </div>
     <div class="topbar-end">
       <button id="open-history" class="btn btn-ghost">🕘 الرحلات السابقة</button>
+      <button id="open-devices" class="btn btn-ghost">🚛 الأجهزة</button>
       <button id="open-locations" class="btn btn-ghost">📍 المواقع</button>
       <button id="map-theme" class="btn btn-ghost" hidden
               title="تبديل مظهر الخريطة بين الداكن والفاتح"></button>
@@ -181,6 +182,75 @@
 
   <h3>أحداث القفل في نفس الفترة</h3>
   <ul id="history-events" class="feed history-feed"></ul>
+</div>
+
+<!-- إدارة الأجهزة -->
+<div id="devices-page" class="page" hidden>
+  <div class="page-head">
+    <h2>الأجهزة</h2>
+    <button id="close-devices" class="btn btn-ghost">رجوع</button>
+  </div>
+
+  <section id="unknown-section" hidden>
+    <h3>أجهزة تحاول الاتصال ولم تُعتمد بعد</h3>
+    <p class="muted page-intro">
+      هذه أجهزة وصلت إلى الخادم ورُفضت لأنها غير مسجّلة. يكفي تركيب القفل وتوجيهه
+      إلى الخادم ليظهر هنا — دون الحاجة لقراءة رقمه من الملصق.
+    </p>
+    <ul id="unknown-list" class="locations-list"></ul>
+  </section>
+
+  <h3>إضافة جهاز</h3>
+  <form id="device-form" class="location-form">
+    <div class="arrival-row">
+      <div>
+        <label for="dev-id">رقم الجهاز (10 أرقام)</label>
+        <input type="text" id="dev-id" required pattern="\d{10}" placeholder="8055430383" class="ltr-input" />
+      </div>
+      <div>
+        <label for="dev-name">اسم المركبة</label>
+        <input type="text" id="dev-name" required minlength="2" placeholder="شاحنة 3" />
+      </div>
+    </div>
+    <div class="arrival-row">
+      <div>
+        <label for="dev-plate">رقم اللوحة</label>
+        <input type="text" id="dev-plate" placeholder="TRP-003" />
+      </div>
+      <div>
+        <label for="dev-model">الموديل</label>
+        <select id="dev-model">
+          <option value="JT701D" selected>JT701D</option>
+          <option value="JT701E">JT701E</option>
+        </select>
+      </div>
+    </div>
+    <p class="muted">
+      تُضاف الأجهزة بكلمة المرور الافتراضية <span class="ltr-inline">888888</span>.
+      إن كانت مختلفة، استخدم زر «قراءة كلمة المرور» بعد الإضافة.
+    </p>
+    <button type="submit" class="btn btn-primary">إضافة الجهاز</button>
+  </form>
+
+  <h3>الأجهزة المسجّلة</h3>
+  <ul id="devices-list" class="locations-list"></ul>
+</div>
+
+<!-- تغيير كلمة المرور -->
+<div id="password-modal" class="modal" hidden>
+  <form class="modal-card" id="password-form">
+    <h2>تغيير كلمة مرور الجهاز</h2>
+    <p class="warn">
+      لن تُعتمد كلمة المرور الجديدة في المنظومة إلا بعد أن يؤكّد <strong>الجهاز نفسه</strong>
+      قبولها. إن تعذّر الوصول إلى الجهاز تبقى الكلمة القديمة سارية.
+    </p>
+    <label for="pw-new">كلمة المرور الجديدة (6 خانات)</label>
+    <input type="text" id="pw-new" required minlength="6" maxlength="6" class="ltr-input" />
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="pw-cancel">إلغاء</button>
+      <button type="submit" class="btn btn-danger">تغيير</button>
+    </div>
+  </form>
 </div>
 
 <!-- إدارة المواقع -->

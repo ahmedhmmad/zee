@@ -772,6 +772,141 @@ $('arrival-form').addEventListener('submit', async (e) => {
   }
 });
 
+
+// --- Devices administration -------------------------------------------------
+
+async function loadDevicesPage() {
+  const [devices, unknown] = await Promise.all([
+    api('/api/devices').catch(() => []),
+    api('/api/unknown-devices').catch(() => []),
+  ]);
+
+  // Locks that reached the gateway but are not registered. Approving one from
+  // here means the id never has to be read off a label and retyped.
+  const section = $('unknown-section');
+  section.hidden = unknown.length === 0;
+  $('unknown-list').innerHTML = unknown
+    .map(
+      (u) => `<li>
+        <div class="row">
+          <strong class="ltr-inline">${escapeHtml(u.device_id)}</strong>
+          <button class="btn btn-primary btn-xs" data-approve="${escapeHtml(u.device_id)}">اعتماد</button>
+        </div>
+        <div class="muted">
+          ${u.attempts} محاولة · آخرها ${fmtDateTime(u.last_seen)}
+          ${u.remote_ip ? ` · <span class="ltr-inline">${escapeHtml(u.remote_ip)}</span>` : ''}
+        </div>
+      </li>`,
+    )
+    .join('');
+
+  $('devices-list').innerHTML = devices.length
+    ? devices
+        .map((d) => {
+          const weak = d.static_password_is_default;
+          return `<li>
+            <div class="row">
+              <strong>${escapeHtml(d.name)}</strong>
+              <span>
+                <button class="btn btn-ghost btn-xs" data-commission="${d.device_id}">تهيئة</button>
+                <button class="btn btn-ghost btn-xs" data-readpw="${d.device_id}">قراءة كلمة المرور</button>
+                <button class="btn btn-ghost btn-xs" data-setpw="${d.device_id}">تغيير كلمة المرور</button>
+              </span>
+            </div>
+            <div class="muted">
+              <span class="ltr-inline">${d.device_id}</span> · ${escapeHtml(d.plate_number ?? '—')} ·
+              ${d.model ?? '—'}${d.firmware_version ? ` · <span class="ltr-inline">${escapeHtml(d.firmware_version.split('_').slice(0, 2).join('_'))}</span>` : ''}
+              ${weak ? ' · <span class="pill pill-warn">كلمة مرور افتراضية</span>' : ''}
+            </div>
+          </li>`;
+        })
+        .join('')
+    : '<li class="empty">لا توجد أجهزة</li>';
+
+  for (const btn of $('unknown-list').querySelectorAll('[data-approve]')) {
+    btn.addEventListener('click', () => {
+      $('dev-id').value = btn.dataset.approve;
+      $('dev-name').focus();
+    });
+  }
+  for (const btn of $('devices-list').querySelectorAll('[data-commission]')) {
+    btn.addEventListener('click', async () => {
+      const { queued } = await api(`/api/devices/${btn.dataset.commission}/commission`, { method: 'POST' });
+      toast(`تم جدولة ${queued} أوامر تهيئة — ستُنفَّذ عند استيقاظ الجهاز`, 'ok');
+    });
+  }
+  for (const btn of $('devices-list').querySelectorAll('[data-readpw]')) {
+    btn.addEventListener('click', async () => {
+      await api(`/api/devices/${btn.dataset.readpw}/read-password`, { method: 'POST' });
+      toast('تم إرسال طلب قراءة كلمة المرور — تظهر النتيجة في سجل الأوامر', 'ok');
+    });
+  }
+  for (const btn of $('devices-list').querySelectorAll('[data-setpw]')) {
+    btn.addEventListener('click', () => {
+      $('password-modal').dataset.deviceId = btn.dataset.setpw;
+      $('pw-new').value = '';
+      $('password-modal').hidden = false;
+      $('pw-new').focus();
+    });
+  }
+}
+
+$('open-devices').addEventListener('click', () => {
+  $('devices-page').hidden = false;
+  loadDevicesPage();
+});
+$('close-devices').addEventListener('click', () => ($('devices-page').hidden = true));
+
+$('device-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await api('/api/devices', {
+      method: 'POST',
+      body: JSON.stringify({
+        deviceId: $('dev-id').value.trim(),
+        name: $('dev-name').value.trim(),
+        plateNumber: $('dev-plate').value.trim(),
+        model: $('dev-model').value,
+      }),
+    });
+    $('dev-id').value = '';
+    $('dev-name').value = '';
+    $('dev-plate').value = '';
+    toast('تمت إضافة الجهاز — سيظهر عند اتصاله', 'ok');
+    loadDevicesPage();
+    refresh();
+  } catch (err) {
+    const messages = {
+      device_exists: 'الجهاز مسجّل بالفعل',
+      invalid_device_id: 'رقم الجهاز يجب أن يكون 10 أرقام',
+      name_required: 'أدخل اسم المركبة',
+    };
+    toast(messages[String(err.message)] ?? 'تعذّرت الإضافة', 'bad');
+  }
+});
+
+$('pw-cancel').addEventListener('click', () => ($('password-modal').hidden = true));
+
+$('password-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const deviceId = $('password-modal').dataset.deviceId;
+  $('password-modal').hidden = true;
+  try {
+    await api(`/api/devices/${deviceId}/password`, {
+      method: 'POST',
+      body: JSON.stringify({ newPassword: $('pw-new').value.trim() }),
+    });
+    // Deliberately not "changed": the device has to accept it first.
+    toast('أُرسل أمر التغيير — تُعتمد الكلمة الجديدة بعد تأكيد الجهاز', 'ok');
+  } catch (err) {
+    const messages = {
+      password_must_be_6_chars: 'كلمة المرور يجب أن تكون 6 خانات',
+      password_too_common: 'اختر كلمة مرور غير شائعة',
+    };
+    toast(messages[String(err.message)] ?? 'تعذّر تغيير كلمة المرور', 'bad');
+  }
+});
+
 // --- Locations catalogue ----------------------------------------------------
 
 async function loadLocations() {

@@ -217,6 +217,17 @@ export class DeviceSession {
           await store.recordFirmware(frame.deviceId, frame.params[0]);
         }
 
+        // A P44 that answers "1" is the device confirming it accepted a new
+        // password. (A P44 QUERY answers with the password itself, which is
+        // six characters, so the two cannot be confused.)
+        if (frame.command === 'P44' && frame.params[0] === '1') {
+          const adopted = await store.promotePendingPassword(frame.deviceId);
+          if (adopted) {
+            this.log('password rotated and adopted');
+            await store.audit('password_rotated', frame.deviceId, {});
+          }
+        }
+
         let ok = true;
         if (isStatic || isDynamic) {
           const success = isStatic ? frame.params[0] : frame.params[1];

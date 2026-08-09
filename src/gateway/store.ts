@@ -424,6 +424,32 @@ export async function resolveCommandFromResponse(
   return rows[0]?.id ?? null;
 }
 
+/**
+ * Adopt a new password only after the device has confirmed it.
+ *
+ * Updating the database first and then failing to reach the device would
+ * leave the platform holding a password the lock does not have - locked out
+ * of our own hardware, with no way back except a physical visit.
+ */
+export async function promotePendingPassword(deviceId: string): Promise<string | null> {
+  const { rows } = await pool.query<{ new_password: string }>(
+    `SELECT metadata->>'newPassword' AS new_password
+       FROM commands
+      WHERE device_id = $1
+        AND command_type = 'set_password'
+        AND status = 'sent'
+        AND metadata ? 'newPassword'
+      ORDER BY sent_at DESC
+      LIMIT 1`,
+    [deviceId],
+  );
+  const next = rows[0]?.new_password;
+  if (!next) return null;
+
+  await pool.query('UPDATE devices SET static_password = $2 WHERE device_id = $1', [deviceId, next]);
+  return next;
+}
+
 export async function audit(
   action: string,
   deviceId: string | null,
