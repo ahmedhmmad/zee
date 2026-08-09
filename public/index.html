@@ -37,6 +37,7 @@
     <div class="topbar-end">
       <button id="open-history" class="btn btn-ghost">🕘 الرحلات السابقة</button>
       <button id="open-devices" class="btn btn-ghost">🚛 الأجهزة</button>
+      <button id="open-tracking" class="btn btn-ghost">⚙️ إعدادات التتبع</button>
       <button id="open-locations" class="btn btn-ghost">📍 المواقع</button>
       <button id="map-theme" class="btn btn-ghost" hidden
               title="تبديل مظهر الخريطة بين الداكن والفاتح"></button>
@@ -101,49 +102,6 @@
 
       <h3>الأقفال الفرعية (صمامات الخزان)</h3>
       <ul id="sublock-list" class="feed"></ul>
-
-      <details class="hw">
-        <summary>وضع التشغيل والتتبع</summary>
-        <label for="set-mode">وضع الجهاز</label>
-        <select id="set-mode">
-          <option value="tracking">تتبع مستمر — يرسل الموقع دائماً</option>
-          <option value="standby">توفير البطارية — ينام بين الإرسالات</option>
-        </select>
-
-        <div class="arrival-row">
-          <div>
-            <label for="set-awake">فترة الإرسال</label>
-            <select id="set-awake">
-              <option value="5">كل 5 ثوانٍ — أسرع ما يسمح به الجهاز</option>
-              <option value="10">كل 10 ثوانٍ</option>
-              <option value="15">كل 15 ثانية</option>
-              <option value="30" selected>كل 30 ثانية</option>
-              <option value="60">كل دقيقة</option>
-            </select>
-          </div>
-          <div>
-            <label for="set-motion">حساسية الحركة</label>
-            <select id="set-motion">
-              <option value="63" selected>عالية</option>
-              <option value="126">متوسطة (الافتراضي)</option>
-              <option value="500">منخفضة</option>
-            </select>
-          </div>
-        </div>
-
-        <label class="checkbox">
-          <input type="checkbox" id="set-cornering" checked />
-          تقرير المنعطفات — نقاط إضافية عند الانعطاف ليتبع المسار الطريق فعلاً
-        </label>
-
-        <p class="muted">
-          أقصر فترة يسمح بها الجهاز هي 5 ثوانٍ. التتبع المستمر يعرض حركة المركبة
-          لحظة بلحظة، لكنه يستهلك البطارية خلال 10–20 يوماً بدل عدة أشهر — أي أن
-          الجهاز يحتاج شحناً دورياً.
-        </p>
-
-        <button id="apply-settings" class="btn btn-primary btn-block">تطبيق الإعدادات</button>
-      </details>
 
       <h3>الفتح التلقائي عند الوصول</h3>
       <form id="arrival-form" class="arrival-form">
@@ -296,6 +254,133 @@
       <button type="button" class="btn btn-ghost" id="pw-cancel">إلغاء</button>
       <button type="submit" class="btn btn-danger">تغيير</button>
     </div>
+  </form>
+</div>
+
+<!-- إعدادات التتبع -->
+<div id="tracking-page" class="page" hidden>
+  <div class="page-head">
+    <h2>إعدادات التتبع</h2>
+    <button id="close-tracking" class="btn btn-ghost">رجوع</button>
+  </div>
+
+  <p class="muted page-intro">
+    هذه إعدادات تُخزَّن داخل الجهاز نفسه، ولا تُطبَّق إلا عند اتصاله التالي.
+    الجهاز النائم قد يستغرق حتى 30 دقيقة لاستلامها.
+  </p>
+
+  <form id="tracking-form" class="location-form">
+    <label for="trk-device">المركبة</label>
+    <select id="trk-device" required></select>
+
+    <div class="settings-actions">
+      <button type="button" id="trk-read" class="btn btn-ghost">قراءة الإعدادات الحالية من الجهاز</button>
+    </div>
+    <ul id="trk-current" class="feed"></ul>
+
+    <h3>وضع التشغيل</h3>
+    <label for="trk-mode">الوضع</label>
+    <select id="trk-mode">
+      <option value="tracking">تتبع مستمر — لا ينام، يرسل باستمرار</option>
+      <option value="standby">توفير البطارية — ينام بين الإرسالات</option>
+    </select>
+
+    <div class="arrival-row">
+      <div>
+        <label for="trk-awake">فترة الإرسال أثناء العمل</label>
+        <select id="trk-awake">
+          <option value="5">كل 5 ثوانٍ — أسرع ما يسمح به الجهاز</option>
+          <option value="10">كل 10 ثوانٍ</option>
+          <option value="15">كل 15 ثانية</option>
+          <option value="30" selected>كل 30 ثانية</option>
+          <option value="60">كل دقيقة</option>
+          <option value="120">كل دقيقتين</option>
+        </select>
+      </div>
+      <div>
+        <label for="trk-sleep">الاستيقاظ الدوري أثناء النوم</label>
+        <select id="trk-sleep">
+          <option value="5">كل 5 دقائق</option>
+          <option value="10">كل 10 دقائق</option>
+          <option value="30" selected>كل 30 دقيقة</option>
+          <option value="60">كل ساعة</option>
+        </select>
+      </div>
+    </div>
+
+    <h3>دقة المسار</h3>
+    <label class="checkbox">
+      <input type="checkbox" id="trk-cornering" checked />
+      تقرير المنعطفات — يرسل نقطة إضافية عند الانعطاف، ليتبع المسار الطريق فعلاً
+    </label>
+
+    <div class="arrival-row">
+      <div>
+        <label for="trk-angle">زاوية الانعطاف</label>
+        <select id="trk-angle">
+          <option value="10">10° — مسار دقيق جداً</option>
+          <option value="20" selected>20° — متوازن</option>
+          <option value="45">45° — المنعطفات الحادة فقط</option>
+        </select>
+      </div>
+      <div>
+        <label for="trk-motion">حساسية الحركة</label>
+        <select id="trk-motion">
+          <option value="63" selected>عالية — يستيقظ بأقل حركة</option>
+          <option value="126">متوسطة (الافتراضي)</option>
+          <option value="500">منخفضة</option>
+          <option value="0">إيقاف كشف الحركة</option>
+        </select>
+      </div>
+    </div>
+
+    <label class="checkbox">
+      <input type="checkbox" id="trk-drift" />
+      تثبيت الموقع أثناء التوقف — يمنع تذبذب الموقع للمركبة الواقفة، لكنه قد
+      يجمّد الموقع إن لم يكتشف الجهاز الحركة
+    </label>
+
+    <label class="checkbox">
+      <input type="checkbox" id="trk-gnss" />
+      توفير طاقة GPS — يُطفئ المستقبل بين القراءات. يجب إبقاؤه <strong>غير مفعّل</strong>
+      للتتبع الحقيقي
+    </label>
+
+    <h3>القفل والإنذارات</h3>
+    <div class="arrival-row">
+      <div>
+        <label for="trk-autolock">الإقفال التلقائي بعد الفتح</label>
+        <select id="trk-autolock">
+          <option value="1" selected>دقيقة واحدة</option>
+          <option value="3">3 دقائق</option>
+          <option value="5">5 دقائق</option>
+          <option value="10">10 دقائق</option>
+        </select>
+      </div>
+      <div>
+        <label for="trk-battery">إنذار البطارية المنخفضة</label>
+        <select id="trk-battery">
+          <option value="20">عند 20%</option>
+          <option value="30" selected>عند 30%</option>
+          <option value="50">عند 50%</option>
+        </select>
+      </div>
+    </div>
+
+    <label for="trk-longunlock">إنذار الفتح لمدة طويلة</label>
+    <select id="trk-longunlock">
+      <option value="10">بعد 10 دقائق</option>
+      <option value="30">بعد 30 دقيقة</option>
+      <option value="60">بعد ساعة</option>
+      <option value="120" selected>بعد ساعتين (الافتراضي)</option>
+    </select>
+
+    <p class="warn">
+      التتبع المستمر مع الإرسال كل 5 ثوانٍ يستهلك البطارية خلال أيام لا أشهر،
+      ويحتاج الجهاز إلى شحن دوري.
+    </p>
+
+    <button type="submit" class="btn btn-primary btn-block">حفظ وإرسال إلى الجهاز</button>
   </form>
 </div>
 

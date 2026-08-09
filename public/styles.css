@@ -448,3 +448,7 @@ select {
 
 .checkbox { display: flex; gap: .5rem; align-items: flex-start; font-size: .85rem; color: var(--muted); margin-block: .6rem; line-height: 1.6; }
 .checkbox input { margin-block-start: .2rem; }
+
+.settings-actions { margin-block: .8rem; }
+#trk-current { margin-block-end: 1rem; }
+#trk-current .row { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }

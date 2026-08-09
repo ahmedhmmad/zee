@@ -658,28 +658,106 @@ async function loadTrack(deviceId) {
 
 // Clear the route when no vehicle is selected, so it cannot be mistaken for
 // the track of whichever vehicle is selected next.
-// --- Device settings --------------------------------------------------------
+// --- Tracking settings page -------------------------------------------------
 
-$('apply-settings').addEventListener('click', async () => {
-  const deviceId = state.selectedId;
+const SETTING_LABELS = {
+  query_tracking: 'وضع التتبع',
+  query_intervals: 'فترات الإرسال',
+  query_motion: 'حساسية الحركة',
+  query_cornering: 'تقرير المنعطفات',
+  query_drift: 'تثبيت الموقع',
+  query_gnss_power: 'توفير طاقة GPS',
+  query_autolock: 'الإقفال التلقائي',
+};
+
+$('open-tracking').addEventListener('click', () => {
+  $('tracking-page').hidden = false;
+  // Reuse the vehicle list already loaded for the map.
+  $('trk-device').innerHTML = state.devices
+    .map((d) => `<option value="${d.device_id}">${escapeHtml(d.name)} — ${escapeHtml(d.plate_number ?? d.device_id)}</option>`)
+    .join('');
+  if (state.selectedId) $('trk-device').value = state.selectedId;
+  loadCurrentSettings();
+});
+
+$('close-tracking').addEventListener('click', () => ($('tracking-page').hidden = true));
+$('trk-device').addEventListener('change', loadCurrentSettings);
+
+/**
+ * Show what the DEVICE says it is set to, not what we last sent it.
+ *
+ * The platform only knows what it has asked for. A device configured by
+ * someone else, or one that quietly refused a command, would disagree with our
+ * assumptions and nothing else would reveal it.
+ */
+async function loadCurrentSettings() {
+  const deviceId = $('trk-device').value;
+  const list = $('trk-current');
   if (!deviceId) return;
 
-  const tracking = $('set-mode').value === 'tracking';
   try {
-    await api(`/api/devices/${deviceId}/settings`, {
+    const rows = await api(`/api/devices/${deviceId}/settings`);
+    const answered = rows.filter((r) => r.response);
+    if (!answered.length) {
+      list.innerHTML =
+        '<li class="empty">لم تُقرأ إعدادات الجهاز بعد — اضغط "قراءة الإعدادات الحالية"</li>';
+      return;
+    }
+    list.innerHTML = answered
+      .map(
+        (r) => `<li>
+          <div class="row">
+            <strong>${SETTING_LABELS[r.command_type] ?? r.command_type}</strong>
+            <span class="ltr-inline muted">${escapeHtml(r.response)}</span>
+          </div>
+          <div class="when">${fmtDateTime(r.confirmed_at ?? r.sent_at)}</div>
+        </li>`,
+      )
+      .join('');
+  } catch {
+    list.innerHTML = '<li class="empty">تعذّر التحميل</li>';
+  }
+}
+
+$('trk-read').addEventListener('click', async () => {
+  const deviceId = $('trk-device').value;
+  if (!deviceId) return;
+  try {
+    await api(`/api/devices/${deviceId}/settings/read`, { method: 'POST' });
+    toast('تم إرسال طلب القراءة — ستظهر النتائج عند استيقاظ الجهاز', 'ok');
+  } catch {
+    toast('تعذّر إرسال طلب القراءة', 'bad');
+  }
+});
+
+$('tracking-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const deviceId = $('trk-device').value;
+  if (!deviceId) {
+    toast('اختر مركبة أولاً', 'bad');
+    return;
+  }
+
+  try {
+    const { queued } = await api(`/api/devices/${deviceId}/settings`, {
       method: 'POST',
       body: JSON.stringify({
-        tracking,
-        awakeSeconds: Number($('set-awake').value),
-        // In tracking mode the device never sleeps, so the RTC interval is
-        // irrelevant; leave it long so switching back to standby is sane.
-        sleepMinutes: tracking ? 30 : 30,
-        motionThreshold: Number($('set-motion').value),
-        cornering: $('set-cornering').checked,
+        tracking: $('trk-mode').value === 'tracking',
+        awakeSeconds: Number($('trk-awake').value),
+        sleepMinutes: Number($('trk-sleep').value),
+        motionThreshold: Number($('trk-motion').value),
+        cornering: $('trk-cornering').checked,
+        corneringAngle: Number($('trk-angle').value),
+        corneringSampleSeconds: 1,
+        staticDrift: $('trk-drift').checked,
+        gnssPowerSaving: $('trk-gnss').checked,
+        autoLockMinutes: Number($('trk-autolock').value),
+        longUnlockMinutes: Number($('trk-longunlock').value),
+        lowBatteryPercent: Number($('trk-battery').value),
       }),
     });
-    toast('تم إرسال الإعدادات — ستُطبَّق عند استيقاظ الجهاز', 'ok');
-    loadCommands(deviceId);
+    toast(`تم إرسال ${queued} أمراً — ستُطبَّق عند اتصال الجهاز`, 'ok');
+    if (state.selectedId === deviceId) loadCommands(deviceId);
   } catch {
     toast('تعذّر إرسال الإعدادات', 'bad');
   }

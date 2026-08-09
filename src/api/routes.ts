@@ -424,12 +424,12 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
-   * Device operating mode.
+   * Tracking configuration.
    *
-   * Tracking mode is the difference between an asset monitor and a live
-   * tracker. Standby sleeps for up to 30 minutes at a time, so a journey can
-   * pass entirely inside a blind window - which is exactly what happened the
-   * first time we tried to watch a truck drive.
+   * Every value here is a device-side setting, so nothing takes effect until
+   * the lock next connects and accepts the command. Each is queued separately
+   * rather than as a batch: a device that accepts three of five should keep
+   * those three, not have the lot rolled back.
    */
   app.post('/api/devices/:id/settings', async (req, reply) => {
     const id = deviceIdOf(req, reply);
@@ -441,7 +441,17 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
       sleepMinutes?: number;
       motionThreshold?: number;
       cornering?: boolean;
+      corneringSampleSeconds?: number;
+      corneringAngle?: number;
+      staticDrift?: boolean;
+      gnssPowerSaving?: boolean;
+      autoLockMinutes?: number;
+      longUnlockMinutes?: number;
+      lowBatteryPercent?: number;
     };
+
+    const clamp = (v: unknown, lo: number, hi: number, fallback: number) =>
+      Math.min(Math.max(Math.round(Number(v) || fallback), lo), hi);
 
     const queued: { type: string; payload: string; reason: string }[] = [];
 
@@ -449,32 +459,19 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
       queued.push({
         type: 'set_tracking',
         payload: `(P54,1,${b.tracking ? 1 : 0})`,
-        reason: b.tracking ? 'تفعيل التتبع المستمر' : 'إيقاف التتبع المستمر',
+        reason: b.tracking ? 'تتبع مستمر' : 'وضع توفير البطارية',
       });
     }
 
     if (b.awakeSeconds != null || b.sleepMinutes != null) {
-      // P04 sets both at once, so send whatever the caller did not specify at
-      // its documented default rather than inventing one.
-      // Firmware floor is 5 seconds - P04 documents [5~3600] and rejects less.
-      const awake = Math.min(Math.max(Math.round(Number(b.awakeSeconds) || 60), 5), 3600);
-      const sleep = Math.min(Math.max(Math.round(Number(b.sleepMinutes) || 30), 5), 1440);
+      // P04 carries both intervals, so both are always sent. Firmware floor is
+      // 5 seconds - it documents [5~3600] and rejects anything lower.
+      const awake = clamp(b.awakeSeconds, 5, 3600, 30);
+      const sleep = clamp(b.sleepMinutes, 5, 1440, 30);
       queued.push({
         type: 'set_intervals',
         payload: `(P04,1,${awake},${sleep})`,
-        reason: `فترة الإرسال ${awake} ثانية`,
-      });
-    }
-
-    if (typeof b.cornering === 'boolean') {
-      // Samples every second and reports when the heading changes by more than
-      // the given angle. This is what makes a track follow the road through
-      // turns: a fixed interval alone cuts corners, because the vehicle is
-      // mid-turn between reports.
-      queued.push({
-        type: 'set_cornering',
-        payload: b.cornering ? '(P99,1,1,1,20)' : '(P99,1,0)',
-        reason: b.cornering ? 'تقرير المنعطفات لمسار أدق' : 'إيقاف تقرير المنعطفات',
+        reason: `إرسال كل ${awake} ثانية، واستيقاظ كل ${sleep} دقيقة`,
       });
     }
 
@@ -485,7 +482,65 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
       queued.push({
         type: 'set_motion',
         payload: `(P37,1,${mg})`,
-        reason: `حساسية الاهتزاز ${mg} mg`,
+        reason: mg === 0 ? 'إيقاف كشف الحركة' : `حساسية الحركة ${mg} mg`,
+      });
+    }
+
+    if (typeof b.cornering === 'boolean') {
+      // Samples every N seconds and emits an extra position when the heading
+      // turns more than the given angle. This is what makes a track follow the
+      // road through junctions instead of cutting the corner between reports.
+      const sample = clamp(b.corneringSampleSeconds, 1, 600, 1);
+      const angle = clamp(b.corneringAngle, 5, 180, 20);
+      queued.push({
+        type: 'set_cornering',
+        payload: b.cornering ? `(P99,1,1,${sample},${angle})` : '(P99,1,0)',
+        reason: b.cornering ? `تقرير المنعطفات عند ${angle}°` : 'إيقاف تقرير المنعطفات',
+      });
+    }
+
+    if (typeof b.staticDrift === 'boolean') {
+      queued.push({
+        type: 'set_drift_opt',
+        payload: `(P63,1,${b.staticDrift ? 1 : 0})`,
+        reason: b.staticDrift ? 'تثبيت الموقع أثناء التوقف' : 'تحديث الموقع دائماً',
+      });
+    }
+
+    if (typeof b.gnssPowerSaving === 'boolean') {
+      // With this on the GNSS module naps between fixes, which costs accuracy
+      // and responsiveness. It must be off for real tracking.
+      queued.push({
+        type: 'set_gnss_power',
+        payload: `(P97,1,${b.gnssPowerSaving ? 1 : 0})`,
+        reason: b.gnssPowerSaving ? 'توفير طاقة GPS' : 'GPS يعمل باستمرار',
+      });
+    }
+
+    if (b.autoLockMinutes != null) {
+      const m = clamp(b.autoLockMinutes, 1, 10, 1);
+      queued.push({
+        type: 'set_autolock',
+        payload: `(P83,1,${m})`,
+        reason: `الإقفال التلقائي بعد ${m} دقيقة`,
+      });
+    }
+
+    if (b.longUnlockMinutes != null) {
+      const m = clamp(b.longUnlockMinutes, 3, 180, 120);
+      queued.push({
+        type: 'set_long_unlock',
+        payload: `(P38,1,${m})`,
+        reason: `إنذار الفتح الطويل بعد ${m} دقيقة`,
+      });
+    }
+
+    if (b.lowBatteryPercent != null) {
+      const pct = clamp(b.lowBatteryPercent, 0, 90, 30);
+      queued.push({
+        type: 'set_low_battery',
+        payload: `(P61,1,${pct})`,
+        reason: `إنذار البطارية عند ${pct}%`,
       });
     }
 
@@ -501,6 +556,54 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     await audit(req, 'device_settings_changed', id, { queued });
 
     return { queued: queued.length };
+  });
+
+  /**
+   * Ask the device what it is actually set to.
+   *
+   * Worth having because the platform only knows what it has SENT. A device
+   * configured by someone else, or one that rejected a command, will disagree
+   * with our assumptions and nothing would reveal it.
+   */
+  app.post('/api/devices/:id/settings/read', async (req, reply) => {
+    const id = deviceIdOf(req, reply);
+    if (!id) return reply;
+
+    const queries: [string, string][] = [
+      ['query_tracking', '(P54,0)'],
+      ['query_intervals', '(P04,0)'],
+      ['query_motion', '(P37,0)'],
+      ['query_cornering', '(P99,0)'],
+      ['query_drift', '(P63,0)'],
+      ['query_gnss_power', '(P97,0)'],
+      ['query_autolock', '(P83,0)'],
+    ];
+
+    for (const [type, payload] of queries) {
+      await pool.query(
+        `INSERT INTO commands (device_id, command_type, payload, requested_by, reason, expires_at)
+         VALUES ($1, $2, $3, $4, 'قراءة الإعدادات الحالية', now() + interval '6 hours')`,
+        [id, type, payload, actorOf(req)],
+      );
+    }
+    await audit(req, 'device_settings_read', id, { count: queries.length });
+    return { queued: queries.length };
+  });
+
+  /** The device's own answers to those queries, newest first. */
+  app.get('/api/devices/:id/settings', async (req, reply) => {
+    const id = deviceIdOf(req, reply);
+    if (!id) return reply;
+    const { rows } = await pool.query(
+      `SELECT DISTINCT ON (command_type)
+              command_type, payload, response, status, sent_at, confirmed_at
+         FROM commands
+        WHERE device_id = $1
+          AND command_type LIKE 'query_%'
+        ORDER BY command_type, requested_at DESC`,
+      [id],
+    );
+    return rows;
   });
 
   // --- Locations catalogue ------------------------------------------------
