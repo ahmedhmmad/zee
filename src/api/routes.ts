@@ -412,8 +412,9 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     if (!id) return reply;
     const { rows } = await pool.query(
       `SELECT peripheral_id, name, device_type, last_seen_at, voltage,
-              battery_percent, rssi, status_code, locked, rope_cut_alarm,
-              temperature_c, humidity_percent
+              battery_percent, rssi, locked, rope_pulled_out, back_cover_open,
+              charging, event_code, event_name, lock_cycles, rfid_card,
+              comms_lost_alarm, low_voltage_alarm, temperature_c, humidity_percent
          FROM sub_devices
         WHERE master_id = $1
         ORDER BY peripheral_id`,

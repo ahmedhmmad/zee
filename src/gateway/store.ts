@@ -239,12 +239,36 @@ export async function recordPeripheralReading(
   masterId: string,
   p: import('../protocol/decode-peripheral.ts').DecodedPeripheral,
 ): Promise<void> {
+  const fields = [
+    p.peripheralId,
+    masterId,
+    p.deviceType,
+    p.deviceTypeCode,
+    p.reportedAt,
+    p.voltage,
+    p.batteryPercent,
+    p.rssi,
+    p.eventCode,
+    p.eventName,
+    p.locked,
+    p.status?.ropePulledOut ?? null,
+    p.status?.backCoverOpen ?? null,
+    p.status?.charging ?? null,
+    p.lockCycles,
+    p.rfidCard,
+    p.commsLostAlarm,
+    p.lowVoltageAlarm,
+    p.temperatureC,
+    p.humidityPercent,
+  ];
+
   await pool.query(
     `INSERT INTO sub_devices (
        peripheral_id, master_id, device_type, device_type_code, last_seen_at,
-       voltage, battery_percent, rssi, status_code, locked, rope_cut_alarm,
-       temperature_c, humidity_percent
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       voltage, battery_percent, rssi, event_code, event_name, locked,
+       rope_pulled_out, back_cover_open, charging, lock_cycles, rfid_card,
+       comms_lost_alarm, low_voltage_alarm, temperature_c, humidity_percent
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
      ON CONFLICT (peripheral_id) DO UPDATE SET
        master_id        = EXCLUDED.master_id,
        device_type      = EXCLUDED.device_type,
@@ -253,36 +277,33 @@ export async function recordPeripheralReading(
        voltage          = EXCLUDED.voltage,
        battery_percent  = EXCLUDED.battery_percent,
        rssi             = EXCLUDED.rssi,
-       status_code      = EXCLUDED.status_code,
+       event_code       = EXCLUDED.event_code,
+       event_name       = EXCLUDED.event_name,
        locked           = EXCLUDED.locked,
-       rope_cut_alarm   = EXCLUDED.rope_cut_alarm,
+       rope_pulled_out  = EXCLUDED.rope_pulled_out,
+       back_cover_open  = EXCLUDED.back_cover_open,
+       charging         = EXCLUDED.charging,
+       lock_cycles      = EXCLUDED.lock_cycles,
+       rfid_card        = EXCLUDED.rfid_card,
+       comms_lost_alarm = EXCLUDED.comms_lost_alarm,
+       low_voltage_alarm = EXCLUDED.low_voltage_alarm,
        temperature_c    = EXCLUDED.temperature_c,
        humidity_percent = EXCLUDED.humidity_percent
      WHERE sub_devices.last_seen_at IS NULL
         OR sub_devices.last_seen_at <= EXCLUDED.last_seen_at`,
-    [
-      p.peripheralId,
-      masterId,
-      p.deviceType,
-      p.deviceTypeCode,
-      p.reportedAt,
-      p.voltage,
-      p.batteryPercent,
-      p.rssi,
-      p.statusCode,
-      p.locked,
-      p.ropeCutAlarm,
-      p.temperatureC,
-      p.humidityPercent,
-    ],
+    fields,
   );
 
+  // Keep every reading. Replayed data is flagged rather than dropped: it is
+  // still a true record of what the sub-lock did, just delivered late.
   await pool.query(
     `INSERT INTO sub_device_readings (
        peripheral_id, master_id, reported_at, voltage, battery_percent, rssi,
-       status_code, locked, rope_cut_alarm, temperature_c, humidity_percent, raw_hex
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-     ON CONFLICT (peripheral_id, reported_at, status_code) DO NOTHING`,
+       event_code, event_name, locked, rope_pulled_out, back_cover_open,
+       charging, lock_cycles, rfid_card, comms_lost_alarm, low_voltage_alarm,
+       temperature_c, humidity_percent, reupload, sensor_serial, raw_hex
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+     ON CONFLICT (peripheral_id, reported_at, sensor_serial) DO NOTHING`,
     [
       p.peripheralId,
       masterId,
@@ -290,11 +311,20 @@ export async function recordPeripheralReading(
       p.voltage,
       p.batteryPercent,
       p.rssi,
-      p.statusCode,
+      p.eventCode,
+      p.eventName,
       p.locked,
-      p.ropeCutAlarm,
+      p.status?.ropePulledOut ?? null,
+      p.status?.backCoverOpen ?? null,
+      p.status?.charging ?? null,
+      p.lockCycles,
+      p.rfidCard,
+      p.commsLostAlarm,
+      p.lowVoltageAlarm,
       p.temperatureC,
       p.humidityPercent,
+      p.reupload,
+      p.sensorSerial,
       p.raw.toString('hex'),
     ],
   );

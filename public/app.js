@@ -603,25 +603,29 @@ async function loadSubLocks(deviceId) {
     }
     list.innerHTML = subs
       .map((s) => {
-        // locked is deliberately nullable: the status byte decoding is not yet
-        // confirmed, and "unknown" is the honest answer for a code we have not
-        // seen alongside a known physical state.
-        const state = s.rope_cut_alarm
-          ? '<span class="pill pill-danger">قطع الحبل</span>'
+        const state = s.comms_lost_alarm
+          ? '<span class="pill pill-danger">انقطع الاتصال بالقفل</span>'
           : s.locked === true
             ? '<span class="pill pill-ok">مقفل</span>'
             : s.locked === false
               ? '<span class="pill pill-danger">مفتوح</span>'
-              : '<span class="pill pill-muted">حالة غير مؤكدة</span>';
+              : '<span class="pill pill-muted">—</span>';
 
         const bits = [];
         if (s.battery_percent != null) bits.push(`البطارية ${s.battery_percent}%`);
         if (s.voltage != null) bits.push(`${Number(s.voltage).toFixed(2)} فولت`);
         if (s.rssi != null) bits.push(`إشارة ${s.rssi} dBm`);
+        if (s.rope_pulled_out === true) bits.push('الحبل مسحوب');
+        if (s.back_cover_open === true) bits.push('الغطاء مفتوح');
+        if (s.charging === true) bits.push('قيد الشحن');
+        if (s.low_voltage_alarm) bits.push('بطارية منخفضة');
+        if (s.lock_cycles != null) bits.push(`${s.lock_cycles} دورة فتح/إقفال`);
         if (s.temperature_c != null) bits.push(`${s.temperature_c}°م`);
         if (s.humidity_percent != null) bits.push(`رطوبة ${s.humidity_percent}%`);
 
-        return `<li class="${s.rope_cut_alarm ? 'bad' : ''}">
+        const alarming = s.comms_lost_alarm || s.back_cover_open === true || s.locked === false;
+
+        return `<li class="${alarming ? 'bad' : ''}">
           <div class="row">
             <strong class="ltr-inline">${escapeHtml(s.peripheral_id)}</strong>
             ${state}

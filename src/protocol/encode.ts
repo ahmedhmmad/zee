@@ -130,7 +130,24 @@ export function restart(): Buffer {
  */
 export function wlnet(deviceId: string, index: number, ...params: (string | number)[]): Buffer {
   const tail = params.length ? `,${params.join(',')}` : '';
-  return cmd(`${deviceId},1,001,WLNET,${index}${tail}`);
+  return cmd(`${deviceId},1,${nextWlnetSerial()},WLNET,${index}${tail}`);
+}
+
+/**
+ * WLNET command serial, 000-999.
+ *
+ * This is not decorative. The manual is explicit: "the serial numbers of the
+ * two commands must be different before and after to prevent repeated
+ * unlocking". A fixed serial means the second unlock you send is discarded as
+ * a duplicate — which would look exactly like the sub-lock being out of range,
+ * and would be maddening to diagnose.
+ *
+ * Sequential rather than random, so consecutive commands can never collide.
+ */
+let wlnetSerial = Math.floor(Math.random() * 1000);
+function nextWlnetSerial(): string {
+  wlnetSerial = (wlnetSerial + 1) % 1000;
+  return String(wlnetSerial).padStart(3, '0');
 }
 
 /** WLNET,1 query: list the peripherals currently bound to this master. */
@@ -165,29 +182,57 @@ export function wlnetQueryFirmware(deviceId: string): Buffer {
 }
 
 /**
- * WLNET,8: unlock a bound sub-lock, relayed by the master over LoRa.
+ * WLNET,8: unlock one bound sub-lock, relayed by the master over LoRa.
  *
- * *** UNVERIFIED. ***
+ * Confirmed against Integration Manual V1.7.1. One sub-lock per command.
  *
- * Indices 1, 4 and 5 come from actual manual pages. This one does not - it
- * comes from a summary that also claimed "WLNET,2 queries the bound list",
- * which directly contradicts the real WLNET,1 page. So the index and the
- * parameter order are plausible, not confirmed.
+ * `minutes` is how long the MASTER will keep trying to hand the command to the
+ * sub-lock over LoRa. If it cannot within that window the command expires and
+ * is never retried. The manual recommends no more than 5, for a reason worth
+ * understanding:
  *
- * Corroboration, for what it is worth: flespi implement remote sub-lock
- * unlocking with exactly these two parameters, a lock id and a validity of at
- * most five minutes, which matches both this format and the JT709EX manual's
- * five-minute wake window.
+ *   The sub-lock only accepts the command on a wake that STARTS after the
+ *   master already holds it. So pressing the wake button first and then
+ *   sending does not work — you must send first, then press. If the button was
+ *   pressed early, you have to let the blue LED go out and press again.
  *
- * Fire it deliberately and read the response. Do not wire it into any
- * automatic flow until a WLNET,8 reply has actually been seen.
+ * A long window therefore just leaves an unlock lurking, waiting to fire on
+ * some later wake nobody is expecting.
  */
 export function wlnetUnlockSubLock(deviceId: string, subLockId: string, minutes = 5): Buffer {
-  // The sub-lock must wake within this window or the command lapses; the
-  // JT709EX manual caps that at five minutes.
   const window = Math.min(Math.max(Math.round(minutes), 1), 5);
-  //         control type 1 = unlock, then count, window, then the ids
+  //                 1 = set, 1 = unlock, window, target
   return wlnet(deviceId, 8, 1, 1, window, subLockId.toUpperCase());
+}
+
+/**
+ * WLNET,18: how often a sleeping sub-lock beats over LoRa, and how long
+ * without one before the master raises a loss alarm. Both in seconds.
+ *
+ * `beatSeconds` 0 disables beating entirely, which is the default — the
+ * sub-lock then says nothing while asleep, to protect a battery that has to
+ * last three years. `alarmSeconds` 0 disables the loss alarm.
+ *
+ * This is the setting that decides whether a sub-lock can collect a queued
+ * unlock without somebody pressing its button. Shorter beat, faster response,
+ * shorter battery life.
+ */
+export function wlnetSetHeartbeat(deviceId: string, beatSeconds: number, alarmSeconds: number): Buffer {
+  const clamp = (v: number) => (v <= 0 ? 0 : Math.min(Math.max(Math.round(v), 5), 86400));
+  return wlnet(deviceId, 18, 1, clamp(beatSeconds), clamp(alarmSeconds));
+}
+
+export function wlnetQueryHeartbeat(deviceId: string): Buffer {
+  return wlnet(deviceId, 18, 0);
+}
+
+/** WLNET,2: JT126 sensor reporting interval, in minutes. */
+export function wlnetSetSensorInterval(deviceId: string, minutes: number): Buffer {
+  return wlnet(deviceId, 2, 1, Math.max(1, Math.round(minutes)));
+}
+
+export function wlnetQuerySensorInterval(deviceId: string): Buffer {
+  return wlnet(deviceId, 2, 0);
 }
 
 /**

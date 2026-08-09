@@ -206,14 +206,23 @@ export class DeviceSession {
           break;
         }
         await store.recordPeripheralReading(frame.deviceId, decoded);
+
+        const lockState =
+          decoded.locked === null ? '' : decoded.locked ? ' LOCKED' : ' UNLOCKED';
         this.log(
-          `peripheral ${decoded.peripheralId} (${decoded.deviceType}) ` +
-            `battery ${decoded.batteryPercent}% ${decoded.voltage}V rssi ${decoded.rssi} ` +
-            `status 0x${decoded.statusCode.toString(16).padStart(2, '0')}`,
+          `peripheral ${decoded.peripheralId} (${decoded.deviceType})${lockState} ` +
+            `battery ${decoded.batteryPercent}% ${decoded.voltage}V rssi ${decoded.rssi}` +
+            (decoded.eventName ? ` event ${decoded.eventName}` : ''),
         );
-        if (decoded.ropeCutAlarm) {
-          this.log(`SUB-LOCK ROPE CUT ALARM — ${decoded.peripheralId}`);
-          await store.audit('sub_lock_rope_cut', frame.deviceId, {
+
+        // Alarms worth surfacing rather than leaving in a table: a cut rope or
+        // a sub-lock the master can no longer hear are both theft signals.
+        if (decoded.commsLostAlarm) {
+          this.log(`SUB-LOCK LOST — ${decoded.peripheralId} out of LoRa contact`);
+          await store.audit('sub_lock_lost', frame.deviceId, { peripheralId: decoded.peripheralId });
+        }
+        if (decoded.status?.backCoverOpen) {
+          await store.audit('sub_lock_cover_open', frame.deviceId, {
             peripheralId: decoded.peripheralId,
           });
         }
