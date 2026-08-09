@@ -281,24 +281,39 @@ export interface PendingCommand {
   expires_at: Date;
 }
 
-/** Claim dispatchable commands for a device, skipping ones already expired. */
+/**
+ * Claim dispatchable commands for a device.
+ *
+ * Claiming and marking sent happen in ONE statement. Selecting first and
+ * marking afterwards let two concurrent drains - one from the socket opening,
+ * one from a NOTIFY or the periodic sweep - both pick up the same rows and
+ * send every command twice, which is exactly what happened to the
+ * commissioning sequence.
+ */
 export async function claimPendingCommands(deviceId: string): Promise<PendingCommand[]> {
-  const { rows } = await pool.query<PendingCommand>(
+  await pool.query(
     `UPDATE commands SET status = 'expired'
       WHERE device_id = $1 AND status IN ('queued','approved') AND expires_at <= now()`,
     [deviceId],
-  ).then(() =>
-    pool.query<PendingCommand>(
-      `SELECT id, device_id, command_type, payload, expires_at
-         FROM commands
+  );
+
+  const { rows } = await pool.query<PendingCommand>(
+    `WITH claimed AS (
+       SELECT id FROM commands
         WHERE device_id = $1
           AND status IN ('queued','approved')
           AND expires_at > now()
           AND (not_before IS NULL OR not_before <= now())
         ORDER BY requested_at ASC
-        LIMIT 20`,
-      [deviceId],
-    ),
+        LIMIT 20
+        FOR UPDATE SKIP LOCKED
+     )
+     UPDATE commands c
+        SET status = 'sent', sent_at = now(), attempts = c.attempts + 1
+       FROM claimed
+      WHERE c.id = claimed.id
+      RETURNING c.id, c.device_id, c.command_type, c.payload, c.expires_at`,
+    [deviceId],
   );
   return rows;
 }
@@ -322,15 +337,6 @@ export async function queueLockStateRefresh(deviceId: string, delayMinutes = 3):
            AND status IN ('queued','approved')
       )`,
     [deviceId, delayMinutes],
-  );
-}
-
-export async function markCommandSent(id: number): Promise<void> {
-  await pool.query(
-    `UPDATE commands
-        SET status = 'sent', sent_at = now(), attempts = attempts + 1
-      WHERE id = $1`,
-    [id],
   );
 }
 

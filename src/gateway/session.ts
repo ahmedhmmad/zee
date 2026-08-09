@@ -218,17 +218,25 @@ export class DeviceSession {
         }
 
         // A P44 that answers "1" is the device confirming it accepted a new
-        // password. (A P44 QUERY answers with the password itself, which is
-        // six characters, so the two cannot be confused.)
+        // password; "0" means it refused, almost always because the current
+        // password we hold is wrong. (A P44 QUERY answers with the password
+        // itself, six characters, so the three cannot be confused.)
+        let ok = true;
         if (frame.command === 'P44' && frame.params[0] === '1') {
           const adopted = await store.promotePendingPassword(frame.deviceId);
           if (adopted) {
             this.log('password rotated and adopted');
             await store.audit('password_rotated', frame.deviceId, {});
           }
+        } else if (frame.command === 'P44' && frame.params[0] === '0') {
+          // Was previously recorded as success, because only unlocks had their
+          // response inspected. A failed rotation showing as confirmed is
+          // worse than useless: it says the password changed when it did not.
+          ok = false;
+          this.log('PASSWORD CHANGE REFUSED — the current password we hold is wrong');
+          await store.audit('password_rotation_refused', frame.deviceId, {});
         }
 
-        let ok = true;
         if (isStatic || isDynamic) {
           const success = isStatic ? frame.params[0] : frame.params[1];
           const wrongCount = isStatic ? frame.params[1] : frame.params[2];
@@ -262,11 +270,11 @@ export class DeviceSession {
     if (!this.isIdentified || this.socket.destroyed) return;
     const pending = await store.claimPendingCommands(this.#deviceId!);
 
+    // Already marked 'sent' by the claim, so a concurrent drain cannot pick
+    // them up again. Only the failure path needs correcting here.
     for (const cmd of pending) {
-      const ok = this.send(cmd.payload);
-      if (ok) {
-        await store.markCommandSent(cmd.id);
-        // 'sent' is not 'confirmed' — only the device's own P45 closes an unlock.
+      if (this.send(cmd.payload)) {
+        // 'sent' is not 'confirmed' — only the device's own response closes it.
         await store.audit('command_sent', cmd.device_id, { type: cmd.command_type, payload: cmd.payload }, cmd.id);
         this.log(`sent ${cmd.command_type}: ${cmd.payload}`);
       } else {
