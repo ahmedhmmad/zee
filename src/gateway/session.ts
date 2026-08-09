@@ -190,6 +190,11 @@ export class DeviceSession {
         break;
 
       case 'peripheral': {
+        // Peripheral data is acknowledged exactly like position data. Without
+        // this the device re-sends the same payload every 35 seconds forever,
+        // burning its battery and the sub-lock's.
+        this.send(encode.ackData(frame.serial));
+
         const decoded = decodePeripheralPayload(frame.payload);
         if (!decoded) {
           // Keep the bytes: an undecodable payload is the raw material for

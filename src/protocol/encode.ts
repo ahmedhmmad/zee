@@ -114,6 +114,56 @@ export function restart(): Buffer {
   return cmd('P15');
 }
 
+// ---------------------------------------------------------------------------
+// WLNET — peripherals (JT126 sensors, JT709 sub-locks, JT802 valve locks)
+// ---------------------------------------------------------------------------
+
+/**
+ * WLNET commands are shaped differently from the P-commands above: they carry
+ * the device ID and a protocol version, which P-commands omit.
+ *
+ *   (deviceId, version, serial, WLNET, index, function, params...)
+ *
+ * `version` is fixed at 1 for JT701D (23 for JT701T). `serial` is 0-255 and,
+ * per the manual, "the device normally ignores this number and replies as per
+ * command". Function is 1 to set, 0 to query, and may be omitted entirely.
+ */
+export function wlnet(deviceId: string, index: number, ...params: (string | number)[]): Buffer {
+  const tail = params.length ? `,${params.join(',')}` : '';
+  return cmd(`${deviceId},1,001,WLNET,${index}${tail}`);
+}
+
+/** WLNET,1 query: list the peripherals currently bound to this master. */
+export function wlnetQueryBound(deviceId: string): Buffer {
+  return wlnet(deviceId, 1, 0);
+}
+
+/**
+ * WLNET,1 set: bind peripherals.
+ *
+ * DESTRUCTIVE. The manual is explicit: "All the IDs need to be configured
+ * once, cannot be configured separately, each configuration will erase the
+ * previous IDs." So this must always be given the COMPLETE intended list -
+ * passing one new sub-lock unbinds every other one on the truck.
+ *
+ * A JT701 supports up to 50 JT126 sensors and 16 JT709 sub-locks, though the
+ * limit varies by firmware.
+ */
+export function wlnetBindPeripherals(deviceId: string, ids: string[]): Buffer {
+  if (ids.length === 0) return wlnetUnbindAll(deviceId);
+  return wlnet(deviceId, 1, 1, ids.length, ...ids.map((id) => id.toUpperCase()));
+}
+
+/** WLNET,1 with a count of zero: unbind everything. */
+export function wlnetUnbindAll(deviceId: string): Buffer {
+  return wlnet(deviceId, 1, 1, 0);
+}
+
+/** WLNET,4: firmware versions of the master's radio and the bound sensor. */
+export function wlnetQueryFirmware(deviceId: string): Buffer {
+  return wlnet(deviceId, 4);
+}
+
 /**
  * Escape hatch for commands we haven't wrapped. Accepts the body without
  * parentheses, e.g. `raw('P83,1,5')`.

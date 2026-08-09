@@ -169,7 +169,14 @@ export interface DynamicPasswordFrame {
 export interface PeripheralFrame {
   kind: 'peripheral';
   deviceId: string;
-  /** Un-escaped payload. Decoding awaits the JT709/JT126 integration manual. */
+  /** Protocol version field: JT701D is fixed at 1, JT701T uses 23. */
+  protocolVersion: string;
+  /**
+   * Data serial number, 0-255. Must be echoed in the P69 acknowledgement or
+   * the device keeps re-sending the same peripheral data.
+   */
+  serial: number;
+  /** Un-escaped payload, starting at the data-type marker. */
   payload: Buffer;
   raw: string;
 }

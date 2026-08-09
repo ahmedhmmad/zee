@@ -38,7 +38,7 @@ export function decodeAsciiFrame(frame: Buffer): DecodedFrame {
   // WLNET can appear at varying field positions depending on the wrapper the
   // firmware uses, so detect it by presence rather than index.
   if (parts.includes('WLNET')) {
-    return decodePeripheral(deviceId, inner, text);
+    return decodePeripheral(deviceId, inner, text, parts);
   }
 
   const command = parts[1] ?? '';
@@ -208,13 +208,33 @@ export function unescapePeripheral(buf: Buffer): Buffer {
   return out.subarray(0, w);
 }
 
-function decodePeripheral(deviceId: string, inner: Buffer, text: string): PeripheralFrame {
-  // Payload begins after the "WLNET,5," marker; keep it raw until we have the
-  // JT709/JT126 integration manual to decode sub-lock status properly.
+/**
+ * Peripheral data frame:
+ *
+ *   (deviceId, protocolVersion, serial, WLNET, 5, dataType, <binary payload>)
+ *
+ * The serial matters: like position data, this must be acknowledged with
+ * (P69,0,serial) or the device re-sends the same payload indefinitely.
+ */
+function decodePeripheral(deviceId: string, inner: Buffer, text: string, parts: string[]): PeripheralFrame {
   const marker = Buffer.from('WLNET,5,', 'latin1');
   const idx = inner.indexOf(marker);
   const payload = idx === -1 ? Buffer.alloc(0) : unescapePeripheral(inner.subarray(idx + marker.length));
-  return { kind: 'peripheral', deviceId, payload, raw: text };
+
+  // Fields 2 and 3, before the WLNET command word. Leading zeros are decorative
+  // ("077" is 77), so parse rather than compare as text.
+  const wlnetIdx = parts.indexOf('WLNET');
+  const protocolVersion = wlnetIdx >= 2 ? (parts[wlnetIdx - 2] ?? '') : '';
+  const serial = wlnetIdx >= 1 ? Number(parts[wlnetIdx - 1]) : NaN;
+
+  return {
+    kind: 'peripheral',
+    deviceId,
+    protocolVersion,
+    serial: Number.isFinite(serial) ? serial : 0,
+    payload,
+    raw: text,
+  };
 }
 
 function unknown(deviceId: string | null, reason: string, raw: Buffer): UnknownFrame {

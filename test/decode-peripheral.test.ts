@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { decodePeripheralPayload } from '../src/protocol/decode-peripheral.ts';
+import { unescapePeripheral } from '../src/protocol/decode-ascii.ts';
 
 /**
  * The reference frame: captured from master 8055430364 on 2026-08-06, with
@@ -98,4 +99,54 @@ test('sub-zero temperatures decode as negative', () => {
 
 test('a truncated payload is rejected rather than half-read', () => {
   assert.equal(decodePeripheralPayload(Buffer.from(REAL_FRAME, 'hex').subarray(0, 30)), null);
+});
+
+// --- Frame-level fields and acknowledgement ---------------------------------
+
+import { decodeAsciiFrame } from '../src/protocol/decode-ascii.ts';
+import * as encode from '../src/protocol/encode.ts';
+import type { PeripheralFrame } from '../src/protocol/types.ts';
+
+test('peripheral frame exposes the serial the P69 ack must echo', () => {
+  // Structure from the integration manual:
+  //   (deviceId, protocolVersion, serial, WLNET, 5, dataType, payload)
+  const frame = Buffer.concat([
+    Buffer.from('(7500313620,1,077,WLNET,5,', 'latin1'),
+    Buffer.from(REAL_FRAME, 'hex'),
+    Buffer.from(')', 'latin1'),
+  ]);
+  const d = decodeAsciiFrame(frame);
+  assert.equal(d.kind, 'peripheral');
+  const p = d as PeripheralFrame;
+  assert.equal(p.protocolVersion, '1');
+  // "077" is decimal 77 — the leading zeros are decorative.
+  assert.equal(p.serial, 77);
+  assert.equal(encode.ackData(p.serial).toString(), '(P69,0,77)');
+});
+
+test('WLNET commands carry the device id, unlike P-commands', () => {
+  assert.equal(encode.wlnetQueryBound('7500313609').toString(), '(7500313609,1,001,WLNET,1,0)');
+  assert.equal(encode.wlnetQueryFirmware('7500313609').toString(), '(7500313609,1,001,WLNET,4)');
+});
+
+test('binding sends the complete list, because each write erases the previous', () => {
+  assert.equal(
+    encode.wlnetBindPeripherals('7500313609', ['E0171A00DC', 'E0171A00F1', 'E0171A00A0']).toString(),
+    '(7500313609,1,001,WLNET,1,1,3,E0171A00DC,E0171A00F1,E0171A00A0)',
+  );
+  // An empty list is unbind-all, not a malformed command with a zero count.
+  assert.equal(encode.wlnetBindPeripherals('7500313609', []).toString(), '(7500313609,1,001,WLNET,1,1,0)');
+  assert.equal(encode.wlnetUnbindAll('7500313609').toString(), '(7500313609,1,001,WLNET,1,1,0)');
+});
+
+test('escape sequences match the XOR rule the manual describes', () => {
+  // "add 0x3D firstly, then exclusive or this character with 0x3D"
+  for (const real of [0x28, 0x29, 0x2c, 0x3d]) {
+    const escaped = Buffer.from([0x3d, real ^ 0x3d]);
+    assert.deepEqual(
+      unescapePeripheral(escaped),
+      Buffer.from([real]),
+      `0x${real.toString(16)} XOR 0x3D round-trips`,
+    );
+  }
 });
