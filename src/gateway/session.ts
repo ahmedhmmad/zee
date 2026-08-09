@@ -11,6 +11,7 @@ import { Framer, decodeFrame, encode, type DecodedFrame } from '../protocol/inde
 import { config } from '../config.ts';
 import * as store from './store.ts';
 import { checkArrivalUnlocks } from './arrivals.ts';
+import { decodePeripheralPayload } from '../protocol/decode-peripheral.ts';
 
 export interface SessionEvents {
   onIdentified(deviceId: string, session: DeviceSession): void;
@@ -188,14 +189,31 @@ export class DeviceSession {
         await store.touchLastSeen(frame.deviceId);
         break;
 
-      case 'peripheral':
-        // Sub-lock and sensor payloads. Acknowledge so the device stops
-        // retrying; decoding awaits the JT709/JT126 integration manual.
-        await store.audit('peripheral_data', frame.deviceId, {
-          bytes: frame.payload.length,
-          hex: frame.payload.toString('hex').slice(0, 512),
-        });
+      case 'peripheral': {
+        const decoded = decodePeripheralPayload(frame.payload);
+        if (!decoded) {
+          // Keep the bytes: an undecodable payload is the raw material for
+          // working out what changed in a firmware or a new peripheral type.
+          await store.audit('peripheral_undecodable', frame.deviceId, {
+            bytes: frame.payload.length,
+            hex: frame.payload.toString('hex').slice(0, 512),
+          });
+          break;
+        }
+        await store.recordPeripheralReading(frame.deviceId, decoded);
+        this.log(
+          `peripheral ${decoded.peripheralId} (${decoded.deviceType}) ` +
+            `battery ${decoded.batteryPercent}% ${decoded.voltage}V rssi ${decoded.rssi} ` +
+            `status 0x${decoded.statusCode.toString(16).padStart(2, '0')}`,
+        );
+        if (decoded.ropeCutAlarm) {
+          this.log(`SUB-LOCK ROPE CUT ALARM — ${decoded.peripheralId}`);
+          await store.audit('sub_lock_rope_cut', frame.deviceId, {
+            peripheralId: decoded.peripheralId,
+          });
+        }
         break;
+      }
 
       case 'command_response': {
         this.log(`response ${frame.command}: ${frame.params.join(',')}`);

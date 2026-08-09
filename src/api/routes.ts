@@ -407,6 +407,21 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     return { queued: steps.length };
   });
 
+  app.get('/api/devices/:id/sublocks', async (req, reply) => {
+    const id = deviceIdOf(req, reply);
+    if (!id) return reply;
+    const { rows } = await pool.query(
+      `SELECT peripheral_id, name, device_type, last_seen_at, voltage,
+              battery_percent, rssi, status_code, locked, rope_cut_alarm,
+              temperature_c, humidity_percent
+         FROM sub_devices
+        WHERE master_id = $1
+        ORDER BY peripheral_id`,
+      [id],
+    );
+    return rows;
+  });
+
   // --- Locations catalogue ------------------------------------------------
 
   app.get('/api/locations', async () => {

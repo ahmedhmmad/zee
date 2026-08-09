@@ -423,7 +423,7 @@ async function renderDetail() {
     : '';
 
   $('unlock-btn').disabled = false;
-  await Promise.all([loadCommands(d.device_id), loadEvents(d.device_id), loadArrivals(d.device_id)]);
+  await Promise.all([loadCommands(d.device_id), loadEvents(d.device_id), loadArrivals(d.device_id), loadSubLocks(d.device_id)]);
 }
 
 async function loadCommands(deviceId) {
@@ -583,6 +583,58 @@ $('unlock-form').addEventListener('submit', async (e) => {
     );
   }
 });
+
+// --- Sub-locks --------------------------------------------------------------
+
+const SUB_TYPES = {
+  jt709_sub_lock: 'قفل فرعي JT709',
+  jt126_temp_humidity: 'مستشعر حرارة JT126',
+  jt802_valve_lock: 'قفل صمام JT802',
+  unknown: 'جهاز غير معروف',
+};
+
+async function loadSubLocks(deviceId) {
+  const list = $('sublock-list');
+  try {
+    const subs = await api(`/api/devices/${deviceId}/sublocks`);
+    if (!subs.length) {
+      list.innerHTML = '<li class="empty">لا توجد أقفال فرعية مرتبطة</li>';
+      return;
+    }
+    list.innerHTML = subs
+      .map((s) => {
+        // locked is deliberately nullable: the status byte decoding is not yet
+        // confirmed, and "unknown" is the honest answer for a code we have not
+        // seen alongside a known physical state.
+        const state = s.rope_cut_alarm
+          ? '<span class="pill pill-danger">قطع الحبل</span>'
+          : s.locked === true
+            ? '<span class="pill pill-ok">مقفل</span>'
+            : s.locked === false
+              ? '<span class="pill pill-danger">مفتوح</span>'
+              : '<span class="pill pill-muted">حالة غير مؤكدة</span>';
+
+        const bits = [];
+        if (s.battery_percent != null) bits.push(`البطارية ${s.battery_percent}%`);
+        if (s.voltage != null) bits.push(`${Number(s.voltage).toFixed(2)} فولت`);
+        if (s.rssi != null) bits.push(`إشارة ${s.rssi} dBm`);
+        if (s.temperature_c != null) bits.push(`${s.temperature_c}°م`);
+        if (s.humidity_percent != null) bits.push(`رطوبة ${s.humidity_percent}%`);
+
+        return `<li class="${s.rope_cut_alarm ? 'bad' : ''}">
+          <div class="row">
+            <strong class="ltr-inline">${escapeHtml(s.peripheral_id)}</strong>
+            ${state}
+          </div>
+          <div class="muted">${SUB_TYPES[s.device_type] ?? s.device_type} · ${bits.map(escapeHtml).join(' · ')}</div>
+          <div class="when">${fmtAgo(s.last_seen_at)}</div>
+        </li>`;
+      })
+      .join('');
+  } catch {
+    list.innerHTML = '<li class="empty">تعذّر التحميل</li>';
+  }
+}
 
 // --- Arrival unlocks --------------------------------------------------------
 

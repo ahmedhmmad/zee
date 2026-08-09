@@ -228,6 +228,78 @@ export async function insertLockEvent(e: LockEventFrame): Promise<number | null>
   return rows[0]?.id ?? null;
 }
 
+/**
+ * Record a peripheral reading and update the sub-device's live state.
+ *
+ * Every reading is kept, not just the latest, so a status byte can later be
+ * correlated with a physical state somebody observed - which is how the
+ * provisional lock decoding gets confirmed.
+ */
+export async function recordPeripheralReading(
+  masterId: string,
+  p: import('../protocol/decode-peripheral.ts').DecodedPeripheral,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO sub_devices (
+       peripheral_id, master_id, device_type, device_type_code, last_seen_at,
+       voltage, battery_percent, rssi, status_code, locked, rope_cut_alarm,
+       temperature_c, humidity_percent
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+     ON CONFLICT (peripheral_id) DO UPDATE SET
+       master_id        = EXCLUDED.master_id,
+       device_type      = EXCLUDED.device_type,
+       device_type_code = EXCLUDED.device_type_code,
+       last_seen_at     = EXCLUDED.last_seen_at,
+       voltage          = EXCLUDED.voltage,
+       battery_percent  = EXCLUDED.battery_percent,
+       rssi             = EXCLUDED.rssi,
+       status_code      = EXCLUDED.status_code,
+       locked           = EXCLUDED.locked,
+       rope_cut_alarm   = EXCLUDED.rope_cut_alarm,
+       temperature_c    = EXCLUDED.temperature_c,
+       humidity_percent = EXCLUDED.humidity_percent
+     WHERE sub_devices.last_seen_at IS NULL
+        OR sub_devices.last_seen_at <= EXCLUDED.last_seen_at`,
+    [
+      p.peripheralId,
+      masterId,
+      p.deviceType,
+      p.deviceTypeCode,
+      p.reportedAt,
+      p.voltage,
+      p.batteryPercent,
+      p.rssi,
+      p.statusCode,
+      p.locked,
+      p.ropeCutAlarm,
+      p.temperatureC,
+      p.humidityPercent,
+    ],
+  );
+
+  await pool.query(
+    `INSERT INTO sub_device_readings (
+       peripheral_id, master_id, reported_at, voltage, battery_percent, rssi,
+       status_code, locked, rope_cut_alarm, temperature_c, humidity_percent, raw_hex
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+     ON CONFLICT (peripheral_id, reported_at, status_code) DO NOTHING`,
+    [
+      p.peripheralId,
+      masterId,
+      p.reportedAt,
+      p.voltage,
+      p.batteryPercent,
+      p.rssi,
+      p.statusCode,
+      p.locked,
+      p.ropeCutAlarm,
+      p.temperatureC,
+      p.humidityPercent,
+      p.raw.toString('hex'),
+    ],
+  );
+}
+
 export async function recordDynamicPassword(deviceId: string, password: string): Promise<void> {
   await pool.query(
     'UPDATE devices SET dynamic_password = $2, dynamic_password_at = now() WHERE device_id = $1',

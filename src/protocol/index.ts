@@ -8,6 +8,8 @@ export * as encode from './encode.ts';
 export { Framer } from './framer.ts';
 export { decodeBinaryFrame } from './decode-binary.ts';
 export { decodeAsciiFrame, unescapePeripheral, parseP45Coord } from './decode-ascii.ts';
+export { decodePeripheralPayload, PeripheralType } from './decode-peripheral.ts';
+export type { DecodedPeripheral } from './decode-peripheral.ts';
 
 export function decodeFrame(frame: RawFrame): DecodedFrame {
   return frame.type === 'binary' ? decodeBinaryFrame(frame.bytes) : decodeAsciiFrame(frame.bytes);
