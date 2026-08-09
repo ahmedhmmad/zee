@@ -65,8 +65,13 @@ export interface PositionFrame {
   protocolVersion: string;
   deviceType: number;
   dataType: number;
-  /** True for data types 2 and 3 — history, not the device's current state. */
+  /** Blind-area data (type 3): recorded with no coverage, hours old. */
   isHistorical: boolean;
+  /**
+   * Sub-new data (type 4): the device's recent backlog, delivered LIFO just
+   * behind the real-time frames. Seconds old, not history.
+   */
+  isBacklog: boolean;
   isAlarm: boolean;
   reportedAt: Date;
   latitude: number;

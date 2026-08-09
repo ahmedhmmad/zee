@@ -160,7 +160,7 @@ test('serial number 0x56 = 86, which is what the P69 ack must echo', () => {
   assert.equal(decode(EXAMPLE_1).serial, 86);
 });
 
-test('data type 2 is an alarm, 3 and 4 are historical', () => {
+test('data type 2 is an alarm, 3 is history, 4 is recent backlog', () => {
   const buf = Buffer.from(EXAMPLE_1, 'hex');
   const typeByte = buf[7]!;
 
@@ -172,8 +172,12 @@ test('data type 2 is an alarm, 3 and 4 are historical', () => {
   buf[7] = (typeByte & 0xf0) | 3;
   assert.equal((decodeBinaryFrame(buf) as PositionFrame).isHistorical, true, 'blind-area data');
 
+  // Type 4 is the device's recent backlog, not history: it arrives seconds
+  // late, and excluding it froze the live map on a moving vehicle.
   buf[7] = (typeByte & 0xf0) | 4;
-  assert.equal((decodeBinaryFrame(buf) as PositionFrame).isHistorical, true, 'sub-new position');
+  const backlog = decodeBinaryFrame(buf) as PositionFrame;
+  assert.equal(backlog.isHistorical, false, 'sub-new is not history');
+  assert.equal(backlog.isBacklog, true, 'sub-new is backlog');
 });
 
 test('southern and western hemispheres negate the coordinates', () => {

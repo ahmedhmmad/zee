@@ -108,7 +108,16 @@ export function decodeBinaryFrame(frame: Buffer): PositionFrame | UnknownFrame {
     protocolVersion,
     deviceType,
     dataType,
-    isHistorical: dataType === 3 || dataType === 4,
+    /*
+     * Only blind-area data (3) is history.
+     *
+     * Type 4 is "sub-new" position data - the device's recent backlog, sent
+     * LIFO immediately behind the real-time frames, and typically seconds old.
+     * On a fast-moving vehicle most frames arrive this way, so treating it as
+     * history froze the live map while the track line kept growing.
+     */
+    isHistorical: dataType === 3,
+    isBacklog: dataType === 4,
     isAlarm: dataType === 2,
     reportedAt: bcdDateTimeToUtc(date, time),
     latitude,

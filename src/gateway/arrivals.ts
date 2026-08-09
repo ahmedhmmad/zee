@@ -22,9 +22,20 @@ export async function checkArrivalUnlocks(p: PositionFrame): Promise<TriggeredAr
   // good enough to decide whether a tanker has arrived somewhere.
   if (!p.positioned) return [];
 
-  // Blind-area replays deliver positions from hours ago. One of those could
-  // sit inside the radius and fire an unlock long after the truck left.
-  if (p.isHistorical) return [];
+  /*
+   * Act only on a position that still describes where the truck is.
+   *
+   * Guarding on age rather than on data type: blind-area replays are hours
+   * old, but the device's recent backlog (type 4) can also arrive minutes
+   * late, and at motorway speed a two-minute-old fix is several kilometres
+   * behind. Either could sit inside the radius and open a lock the vehicle has
+   * already left.
+   *
+   * Arrivals happen at walking pace anyway - the truck is slowing to stop - so
+   * a tight window costs nothing real.
+   */
+  const ageSeconds = (Date.now() - p.reportedAt.getTime()) / 1000;
+  if (ageSeconds > 120) return [];
 
   const client = await pool.connect();
   try {
