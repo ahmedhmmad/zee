@@ -174,6 +174,39 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     const device = rows[0];
     if (!device) return reply.code(404).send({ error: 'device_not_found' });
 
+    /*
+     * Refuse to keep firing unlocks we can already predict will fail.
+     *
+     * A wrong stored password fails identically every time, each attempt costs
+     * minutes of waiting for a sleeping device, and five in a row trips the
+     * device's own wrong-password alarm. The platform knows after the first
+     * failure; it should say so rather than let an operator walk into the
+     * alarm one attempt at a time.
+     *
+     * Counted only since the password was last changed - correcting it makes
+     * previous failures irrelevant and clears the block automatically.
+     */
+    const { rows: failureRows } = await pool.query<{ failures: number }>(
+      `SELECT count(*)::int AS failures
+         FROM commands c
+        WHERE c.device_id = $1
+          AND c.command_type IN ('unlock_static', 'unlock_dynamic')
+          AND c.status = 'failed'
+          AND c.requested_at > (SELECT password_updated_at FROM devices WHERE device_id = $1)
+          AND c.requested_at > COALESCE((
+                SELECT max(requested_at) FROM commands
+                 WHERE device_id = $1
+                   AND command_type IN ('unlock_static', 'unlock_dynamic')
+                   AND status = 'confirmed'
+              ), '-infinity'::timestamptz)`,
+      [id],
+    );
+    const failures = failureRows[0]?.failures ?? 0;
+    if (failures >= 2) {
+      await audit(req, 'unlock_blocked_after_failures', id, { failures });
+      return reply.code(409).send({ error: 'repeated_password_failures', failures });
+    }
+
     const { rows: inserted } = await pool.query<{ id: number }>(
       `INSERT INTO commands (device_id, command_type, payload, requested_by, reason, status, expires_at)
        VALUES ($1, 'unlock_static', $2, $3, $4, 'queued', now() + ($5 || ' minutes')::interval)

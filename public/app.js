@@ -571,8 +571,16 @@ $('unlock-form').addEventListener('submit', async (e) => {
       'ok',
     );
     loadCommands(deviceId);
-  } catch {
-    toast('تعذّر إرسال الأمر', 'bad');
+  } catch (err) {
+    // The device rejected the stored password more than once. Repeating it
+    // would fail identically and walk into the device's own alarm at five
+    // consecutive failures, so say what actually needs doing.
+    toast(
+      String(err.message) === 'repeated_password_failures'
+        ? 'الجهاز رفض كلمة المرور المحفوظة أكثر من مرة — صحّح كلمة المرور قبل المحاولة ثانيةً'
+        : 'تعذّر إرسال الأمر',
+      'bad',
+    );
   }
 });
 
