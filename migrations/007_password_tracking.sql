@@ -20,6 +20,7 @@ $$;
 
 -- A trigger rather than application code, so a password corrected straight in
 -- psql - which is how it is actually done today - clears the block too.
+DROP TRIGGER IF EXISTS devices_password_touch ON devices;
 CREATE TRIGGER devices_password_touch
   BEFORE UPDATE OF static_password ON devices
   FOR EACH ROW EXECUTE FUNCTION touch_password_updated_at();
