@@ -892,16 +892,20 @@ $('password-form').addEventListener('submit', async (e) => {
   const deviceId = $('password-modal').dataset.deviceId;
   $('password-modal').hidden = true;
   try {
-    await api(`/api/devices/${deviceId}/password`, {
+    const result = await api(`/api/devices/${deviceId}/password`, {
       method: 'POST',
       body: JSON.stringify({ newPassword: $('pw-new').value.trim() }),
     });
     // Deliberately not "changed": the device has to accept it first.
-    toast('أُرسل أمر التغيير — تُعتمد الكلمة الجديدة بعد تأكيد الجهاز', 'ok');
+    toast(
+      result.weakPassword
+        ? 'أُرسل أمر التغيير — تنبيه: كلمة المرور سهلة التخمين'
+        : 'أُرسل أمر التغيير — تُعتمد الكلمة الجديدة بعد تأكيد الجهاز',
+      result.weakPassword ? 'bad' : 'ok',
+    );
   } catch (err) {
     const messages = {
       password_must_be_6_chars: 'كلمة المرور يجب أن تكون 6 خانات',
-      password_too_common: 'اختر كلمة مرور غير شائعة',
     };
     toast(messages[String(err.message)] ?? 'تعذّر تغيير كلمة المرور', 'bad');
   }

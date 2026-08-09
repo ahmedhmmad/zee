@@ -333,9 +333,11 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     if (!/^[\x21-\x7e]{6}$/.test(next)) {
       return reply.code(400).send({ error: 'password_must_be_6_chars' });
     }
-    if (next === '888888' || next === '123456') {
-      return reply.code(400).send({ error: 'password_too_common' });
-    }
+    // Common passwords are recorded, not refused. Which password a fleet uses
+    // is an operational decision, and a tool that overrides it just gets
+    // worked around - as this one was, with hand-written SQL. The audit entry
+    // and the "default password" badge make the choice visible instead.
+    const isWeak = ['888888', '123456', '000000', '111111'].includes(next);
 
     const { rows } = await pool.query<{ static_password: string }>(
       'SELECT static_password FROM devices WHERE device_id = $1',
@@ -352,8 +354,8 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
       [id, `(P44,${next},${current})`, actorOf(req), JSON.stringify({ newPassword: next })],
     );
 
-    await audit(req, 'password_rotation_requested', id, {}, inserted[0]!.id);
-    return { commandId: inserted[0]!.id };
+    await audit(req, 'password_rotation_requested', id, { weakPassword: isWeak }, inserted[0]!.id);
+    return { commandId: inserted[0]!.id, weakPassword: isWeak };
   });
 
   /**
