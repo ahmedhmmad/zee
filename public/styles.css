@@ -445,3 +445,6 @@ select {
 }
 
 .history-feed { max-inline-size: 720px; }
+
+.checkbox { display: flex; gap: .5rem; align-items: flex-start; font-size: .85rem; color: var(--muted); margin-block: .6rem; line-height: 1.6; }
+.checkbox input { margin-block-start: .2rem; }

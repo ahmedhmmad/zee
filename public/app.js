@@ -675,6 +675,7 @@ $('apply-settings').addEventListener('click', async () => {
         // irrelevant; leave it long so switching back to standby is sane.
         sleepMinutes: tracking ? 30 : 30,
         motionThreshold: Number($('set-motion').value),
+        cornering: $('set-cornering').checked,
       }),
     });
     toast('تم إرسال الإعدادات — ستُطبَّق عند استيقاظ الجهاز', 'ok');

@@ -114,10 +114,11 @@
           <div>
             <label for="set-awake">فترة الإرسال</label>
             <select id="set-awake">
+              <option value="5">كل 5 ثوانٍ — أسرع ما يسمح به الجهاز</option>
+              <option value="10">كل 10 ثوانٍ</option>
               <option value="15">كل 15 ثانية</option>
               <option value="30" selected>كل 30 ثانية</option>
               <option value="60">كل دقيقة</option>
-              <option value="120">كل دقيقتين</option>
             </select>
           </div>
           <div>
@@ -130,9 +131,15 @@
           </div>
         </div>
 
+        <label class="checkbox">
+          <input type="checkbox" id="set-cornering" checked />
+          تقرير المنعطفات — نقاط إضافية عند الانعطاف ليتبع المسار الطريق فعلاً
+        </label>
+
         <p class="muted">
-          التتبع المستمر يعرض حركة المركبة لحظة بلحظة، لكنه يستهلك البطارية خلال
-          10–20 يوماً بدل عدة أشهر — أي أن الجهاز يحتاج شحناً دورياً.
+          أقصر فترة يسمح بها الجهاز هي 5 ثوانٍ. التتبع المستمر يعرض حركة المركبة
+          لحظة بلحظة، لكنه يستهلك البطارية خلال 10–20 يوماً بدل عدة أشهر — أي أن
+          الجهاز يحتاج شحناً دورياً.
         </p>
 
         <button id="apply-settings" class="btn btn-primary btn-block">تطبيق الإعدادات</button>

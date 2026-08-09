@@ -440,6 +440,7 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
       awakeSeconds?: number;
       sleepMinutes?: number;
       motionThreshold?: number;
+      cornering?: boolean;
     };
 
     const queued: { type: string; payload: string; reason: string }[] = [];
@@ -455,12 +456,25 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     if (b.awakeSeconds != null || b.sleepMinutes != null) {
       // P04 sets both at once, so send whatever the caller did not specify at
       // its documented default rather than inventing one.
+      // Firmware floor is 5 seconds - P04 documents [5~3600] and rejects less.
       const awake = Math.min(Math.max(Math.round(Number(b.awakeSeconds) || 60), 5), 3600);
       const sleep = Math.min(Math.max(Math.round(Number(b.sleepMinutes) || 30), 5), 1440);
       queued.push({
         type: 'set_intervals',
         payload: `(P04,1,${awake},${sleep})`,
         reason: `فترة الإرسال ${awake} ثانية`,
+      });
+    }
+
+    if (typeof b.cornering === 'boolean') {
+      // Samples every second and reports when the heading changes by more than
+      // the given angle. This is what makes a track follow the road through
+      // turns: a fixed interval alone cuts corners, because the vehicle is
+      // mid-turn between reports.
+      queued.push({
+        type: 'set_cornering',
+        payload: b.cornering ? '(P99,1,1,1,20)' : '(P99,1,0)',
+        reason: b.cornering ? 'تقرير المنعطفات لمسار أدق' : 'إيقاف تقرير المنعطفات',
       });
     }
 
