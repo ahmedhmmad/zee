@@ -150,3 +150,25 @@ test('escape sequences match the XOR rule the manual describes', () => {
     );
   }
 });
+
+test('only WLNET,5 is peripheral data; other indices are command responses', () => {
+  // A WLNET,8 unlock reply must not be fed to the binary sensor decoder.
+  const reply = decodeAsciiFrame(
+    Buffer.from('(8055430364,1,001,WLNET,8,0,E03B60000A)', 'latin1'),
+  );
+  assert.equal(reply.kind, 'command_response');
+  if (reply.kind === 'command_response') {
+    assert.equal(reply.command, 'WLNET,8');
+    assert.deepEqual(reply.params, ['0', 'E03B60000A']);
+  }
+});
+
+test('sub-lock unlock command shape, and the five-minute cap', () => {
+  assert.equal(
+    encode.wlnetUnlockSubLock('8055430364', 'e03b60000a', 5).toString(),
+    '(8055430364,1,001,WLNET,8,1,1,5,E03B60000A)',
+  );
+  // The JT709EX wake window is five minutes; anything longer is meaningless.
+  assert.match(encode.wlnetUnlockSubLock('8055430364', 'E03B60000A', 99).toString(), /,5,E03B60000A\)$/);
+  assert.match(encode.wlnetUnlockSubLock('8055430364', 'E03B60000A', 0).toString(), /,1,E03B60000A\)$/);
+});

@@ -35,10 +35,21 @@ export function decodeAsciiFrame(frame: Buffer): DecodedFrame {
     return unknown(null, `ascii frame has no valid 10-digit device id: ${preview}`, frame);
   }
 
-  // WLNET can appear at varying field positions depending on the wrapper the
-  // firmware uses, so detect it by presence rather than index.
-  if (parts.includes('WLNET')) {
-    return decodePeripheral(deviceId, inner, text, parts);
+  // Only WLNET,5 is peripheral data. Every other WLNET index is a command
+  // response — WLNET,8 answering an unlock, WLNET,1 answering a bind — and
+  // treating those as sensor payloads would feed binary decoders a reply.
+  const wlnetIdx = parts.indexOf('WLNET');
+  if (wlnetIdx !== -1) {
+    if (parts[wlnetIdx + 1] === '5') {
+      return decodePeripheral(deviceId, inner, text, parts);
+    }
+    return {
+      kind: 'command_response',
+      deviceId,
+      command: `WLNET,${parts[wlnetIdx + 1] ?? '?'}`,
+      params: parts.slice(wlnetIdx + 2),
+      raw: text,
+    } satisfies CommandResponseFrame;
   }
 
   const command = parts[1] ?? '';

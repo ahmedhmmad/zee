@@ -165,6 +165,32 @@ export function wlnetQueryFirmware(deviceId: string): Buffer {
 }
 
 /**
+ * WLNET,8: unlock a bound sub-lock, relayed by the master over LoRa.
+ *
+ * *** UNVERIFIED. ***
+ *
+ * Indices 1, 4 and 5 come from actual manual pages. This one does not - it
+ * comes from a summary that also claimed "WLNET,2 queries the bound list",
+ * which directly contradicts the real WLNET,1 page. So the index and the
+ * parameter order are plausible, not confirmed.
+ *
+ * Corroboration, for what it is worth: flespi implement remote sub-lock
+ * unlocking with exactly these two parameters, a lock id and a validity of at
+ * most five minutes, which matches both this format and the JT709EX manual's
+ * five-minute wake window.
+ *
+ * Fire it deliberately and read the response. Do not wire it into any
+ * automatic flow until a WLNET,8 reply has actually been seen.
+ */
+export function wlnetUnlockSubLock(deviceId: string, subLockId: string, minutes = 5): Buffer {
+  // The sub-lock must wake within this window or the command lapses; the
+  // JT709EX manual caps that at five minutes.
+  const window = Math.min(Math.max(Math.round(minutes), 1), 5);
+  //         control type 1 = unlock, then count, window, then the ids
+  return wlnet(deviceId, 8, 1, 1, window, subLockId.toUpperCase());
+}
+
+/**
  * Escape hatch for commands we haven't wrapped. Accepts the body without
  * parentheses, e.g. `raw('P83,1,5')`.
  */
