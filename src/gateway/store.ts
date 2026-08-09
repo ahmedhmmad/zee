@@ -340,6 +340,40 @@ export async function queueLockStateRefresh(deviceId: string, delayMinutes = 3):
   );
 }
 
+/**
+ * Re-queue commands that were sent but never answered.
+ *
+ * Cellular links drop mid-exchange - one device here loses its socket every
+ * few minutes - and a command written into a dying connection is simply gone.
+ * Without this it sits at 'sent' forever: the operator sees "awaiting device
+ * confirmation" indefinitely for something the device never received.
+ *
+ * Retries stay inside the command's own expiry, so an unlock cannot be
+ * resurrected beyond the window it was authorised for.
+ */
+export async function requeueUnansweredCommands(): Promise<number> {
+  const { rowCount } = await pool.query(
+    `UPDATE commands
+        SET status = 'queued'
+      WHERE status = 'sent'
+        AND sent_at < now() - interval '3 minutes'
+        AND expires_at > now()
+        AND attempts < 3`,
+  );
+
+  // Beyond three attempts it is not a transient link problem.
+  await pool.query(
+    `UPDATE commands
+        SET status = 'failed',
+            last_error = 'no response from device after 3 attempts'
+      WHERE status = 'sent'
+        AND sent_at < now() - interval '3 minutes'
+        AND attempts >= 3`,
+  );
+
+  return rowCount ?? 0;
+}
+
 export async function markCommandFailed(id: number, error: string): Promise<void> {
   await pool.query(
     `UPDATE commands SET status = 'failed', last_error = $2 WHERE id = $1`,

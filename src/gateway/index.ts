@@ -10,7 +10,7 @@ import net from 'node:net';
 import { config } from '../config.ts';
 import { createListener, pool } from '../db.ts';
 import { DeviceSession } from './session.ts';
-import { clearAllConnections } from './store.ts';
+import { clearAllConnections, requeueUnansweredCommands } from './store.ts';
 
 /**
  * Live sockets by device ID. In-memory is correct at single-instance scale;
@@ -70,7 +70,14 @@ async function main(): Promise<void> {
   // connected, and NOTIFY only fires on insert. Sweep the live sessions so
   // scheduled work is not stranded until the next reconnect.
   setInterval(() => {
-    for (const session of sessions.values()) void session.drainCommands();
+    void (async () => {
+      // A command written into a dying socket is lost with no error. Put
+      // unanswered ones back in the queue before draining, so the retry goes
+      // out on this pass rather than the next.
+      const requeued = await requeueUnansweredCommands().catch(() => 0);
+      if (requeued > 0) console.log(`[gateway] re-queued ${requeued} unanswered command(s)`);
+      for (const session of sessions.values()) await session.drainCommands();
+    })();
   }, 60_000).unref();
 
   server.listen(config.gateway.port, config.gateway.host, () => {
