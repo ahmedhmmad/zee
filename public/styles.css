@@ -452,3 +452,6 @@ select {
 .settings-actions { margin-block: .8rem; }
 #trk-current { margin-block-end: 1rem; }
 #trk-current .row { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+
+/* A position noticeably behind the vehicle, so nobody reads the marker as live. */
+.lagging { color: var(--warn); }

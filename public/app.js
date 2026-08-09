@@ -65,6 +65,21 @@ const COMPASS = ['شمال', 'شمال شرق', 'شرق', 'جنوب شرق', 'ج
 
 const isMoving = (d) => Number(d.speed_kph ?? 0) >= MOVING_KPH;
 
+/**
+ * The map marker is meaningfully behind reality.
+ *
+ * Positions arrive in bursts when a moving vehicle keeps losing its TCP
+ * session, so the device can be in contact while its last position is minutes
+ * old. Two minutes is roughly four times the configured reporting interval -
+ * beyond that, something is queuing.
+ */
+const POSITION_LAG_MS = 2 * 60 * 1000;
+
+function positionIsLagging(d) {
+  if (!d.last_position_at) return false;
+  return Date.now() - new Date(d.last_position_at) > POSITION_LAG_MS;
+}
+
 function headingLabel(d) {
   if (!isMoving(d)) return 'متوقفة';
   const deg = ((Number(d.heading_deg ?? 0) % 360) + 360) % 360;
@@ -296,7 +311,7 @@ function renderDeviceList() {
       </div>
       <div class="row">
         <span class="muted">${escapeHtml(d.plate_number ?? d.device_id)}</span>
-        <span class="muted">${batteryLabel(d)} · ${fmtAgo(d.last_seen_at)}</span>
+        <span class="muted">${batteryLabel(d)} · ${fmtAgo(d.last_position_at ?? d.last_seen_at)}${positionIsLagging(d) ? ' ⏳' : ''}</span>
       </div>`;
     li.addEventListener('click', () => selectDevice(d.device_id));
     list.appendChild(li);
@@ -410,7 +425,15 @@ async function renderDetail() {
   $('d-model').textContent = d.model ?? '—';
   $('d-imei').textContent = d.imei ?? '—';
   $('d-firmware').textContent = d.firmware_version ?? 'غير معروف — أرسل الأمر P01';
+  // Contact and position are different facts. The sub-lock beats every 35
+  // seconds, so last_seen_at says "now" while the position can be minutes
+  // old - which is exactly when someone stares at a stationary marker
+  // wondering why the truck is not moving.
   $('d-seen').textContent = `${fmtAgo(d.last_seen_at)} (${fmtTime(d.last_seen_at)})`;
+  $('d-posage').textContent = d.last_position_at
+    ? `${fmtAgo(d.last_position_at)} (${fmtTime(d.last_position_at)})`
+    : 'لا يوجد';
+  $('d-posage').className = positionIsLagging(d) ? 'lagging' : '';
   $('d-wake').textContent = WAKE_REASONS[d.wake_source] ?? '—';
 
   // Say "no fix" plainly rather than drawing a confident dot in the wrong place.
