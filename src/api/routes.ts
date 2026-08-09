@@ -501,7 +501,15 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
               ST_X(a.location::geometry) AS longitude,
               -- How far the vehicle is right now, so the operator can see it
               -- approaching rather than guessing.
+              --
+              -- A device that has never had a GPS fix stores 0,0 - a real
+              -- point in the Gulf of Guinea. Measuring to it produced "3879 km"
+              -- for a truck 18 km away, which reads as a broken system rather
+              -- than as "we do not know where this truck is". Report NULL and
+              -- let the UI say so.
               CASE WHEN s.location IS NOT NULL
+                    AND NOT (abs(ST_Y(s.location::geometry)) < 0.0001
+                         AND abs(ST_X(s.location::geometry)) < 0.0001)
                    THEN round(ST_Distance(a.location, s.location)::numeric, 0)
               END AS current_distance_m
          FROM arrival_unlocks a

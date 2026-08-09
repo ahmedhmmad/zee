@@ -678,13 +678,15 @@ async function loadArrivals(deviceId) {
       .map((a) => {
         const notes = [`نطاق ${a.radius_m} م`, `السبب: ${a.reason}`];
         if (a.is_armed) {
-          if (a.current_distance_m != null) {
-            notes.push(
-              Number(a.current_distance_m) <= a.radius_m
+          // Null means the vehicle has no usable fix, not that it is nearby.
+          // Saying so is far better than an invented distance.
+          notes.push(
+            a.current_distance_m == null
+              ? 'لا يوجد موقع GPS للمركبة بعد — لن يعمل الفتح التلقائي حتى تحدد موقعها'
+              : Number(a.current_distance_m) <= a.radius_m
                 ? 'المركبة داخل النطاق'
                 : `المسافة الحالية ${formatDistance(a.current_distance_m)}`,
-            );
-          }
+          );
           notes.push(`ينتهي ${fmtDateTime(a.expires_at)}`);
         } else if (a.triggered_at) {
           notes.push(`نُفِّذ ${fmtDateTime(a.triggered_at)} على بُعد ${a.triggered_distance_m} م`);
