@@ -133,8 +133,14 @@ export class DeviceSession {
     switch (frame.kind) {
       case 'position': {
         const isNew = await store.insertPosition(frame);
-        // Historical replays must not clobber the live snapshot.
-        if (!frame.isHistorical) await store.updateDeviceState(frame);
+        // Blind-area data counts too. It arrives late, but it is still the
+        // truck's real position at the time it was taken - and a vehicle that
+        // drives through a coverage gap would otherwise sit frozen on the map
+        // even after its positions reach us.
+        //
+        // Ordering is safe: updateDeviceState only accepts a report newer than
+        // the one it holds, so a replay of old data cannot rewind the present.
+        await store.updateDeviceState(frame);
         // Ack regardless: the device re-sends until acknowledged, and a
         // duplicate we already hold is still a frame it wants cleared.
         this.send(encode.ackData(frame.serial));
