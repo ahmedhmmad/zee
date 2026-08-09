@@ -125,9 +125,24 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
         };
   };
 
+  let track = null;
+
   return {
     provider: 'google',
     supportsTheme: true,
+    /** Draw the recent route. `coords` is [{lat, lon}], oldest first. */
+    setTrack(coords) {
+      track?.setMap(null);
+      track = null;
+      if (!coords || coords.length < 2) return;
+      track = new google.maps.Polyline({
+        map,
+        path: coords.map((c) => ({ lat: c.latitude, lng: c.longitude })),
+        strokeColor: '#2f9e6e',
+        strokeOpacity: 0.9,
+        strokeWeight: 4,
+      });
+    },
     setTheme(next) {
       map.setOptions({ styles: next === 'light' ? null : GOOGLE_DARK });
     },
@@ -313,6 +328,31 @@ function createOsmMap(container, onMarkerClick) {
     // nothing to restyle. The toggle hides itself rather than doing nothing.
     supportsTheme: false,
     setTheme() {},
+    setTrack(coords) {
+      const data = {
+        type: 'Feature',
+        geometry: {
+          type: 'LineString',
+          coordinates: (coords ?? []).map((c) => [c.longitude, c.latitude]),
+        },
+      };
+      const apply = () => {
+        if (map.getSource('track')) {
+          map.getSource('track').setData(data);
+          return;
+        }
+        map.addSource('track', { type: 'geojson', data });
+        map.addLayer({
+          id: 'track',
+          type: 'line',
+          source: 'track',
+          layout: { 'line-cap': 'round', 'line-join': 'round' },
+          paint: { 'line-color': '#2f9e6e', 'line-width': 4, 'line-opacity': 0.9 },
+        });
+      };
+      // Sources cannot be added before the style has loaded.
+      map.isStyleLoaded() ? apply() : map.once('load', apply);
+    },
     setMarker(id, lat, lon, { title, kind, heading, moving }) {
       let marker = markers.get(id);
       if (!marker) {

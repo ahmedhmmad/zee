@@ -640,6 +640,24 @@ async function loadSubLocks(deviceId) {
   }
 }
 
+/**
+ * Draw where the vehicle has actually been.
+ *
+ * A single dot answers "where is it"; the route answers "where has it been and
+ * how did it get there", which is the question an operator is usually really
+ * asking - and the only way to notice a truck that took an unexpected detour.
+ */
+async function loadTrack(deviceId) {
+  try {
+    const points = await api(`/api/devices/${deviceId}/track?hours=6`);
+    state.map?.setTrack(points);
+  } catch {
+    state.map?.setTrack([]);
+  }
+}
+
+// Clear the route when no vehicle is selected, so it cannot be mistaken for
+// the track of whichever vehicle is selected next.
 // --- Device settings --------------------------------------------------------
 
 $('apply-settings').addEventListener('click', async () => {
