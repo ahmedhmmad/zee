@@ -7,6 +7,9 @@ const state = {
   locations: [],
   selectedId: null,
   map: null,
+  // Keep the selected vehicle centred as it drives. Without this the marker
+  // wanders out of a static viewport and a moving truck looks stationary.
+  follow: true,
 };
 
 // --- Formatting -------------------------------------------------------------
@@ -1313,7 +1316,21 @@ async function refresh() {
   state.devices = await api('/api/devices');
   renderDeviceList();
   syncMarkers();
+  followSelected();
   if (state.selectedId) renderDetail();
+}
+
+/**
+ * Keep the selected vehicle in view.
+ *
+ * At 9 km/h a truck moves 75 m between reports - a few dozen pixels at street
+ * zoom. It is genuinely moving, but against a fixed viewport it reads as
+ * stationary, and eventually it simply leaves the screen.
+ */
+function followSelected() {
+  if (!state.follow || !state.selectedId || !state.map) return;
+  const d = state.devices.find((x) => x.device_id === state.selectedId);
+  if (d && hasLocation(d)) state.map.panTo(d.latitude, d.longitude);
 }
 
 function escapeHtml(s) {

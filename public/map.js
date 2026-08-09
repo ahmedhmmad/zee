@@ -284,6 +284,13 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
       map.panTo({ lat, lng: lon });
       if (map.getZoom() < zoom) map.setZoom(zoom);
     },
+    /**
+     * Recentre without touching zoom. Used to follow a moving vehicle, where
+     * yanking the zoom on every position would be unusable.
+     */
+    panTo(lat, lon) {
+      map.panTo({ lat, lng: lon });
+    },
     raw: map,
   };
 }
@@ -469,6 +476,9 @@ function createOsmMap(container, onMarkerClick) {
     },
     flyTo(lat, lon, zoom = 15) {
       map.flyTo({ center: [lon, lat], zoom, duration: 800 });
+    },
+    panTo(lat, lon) {
+      map.panTo([lon, lat], { duration: 600 });
     },
     raw: map,
   };
