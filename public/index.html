@@ -102,6 +102,42 @@
       <h3>الأقفال الفرعية (صمامات الخزان)</h3>
       <ul id="sublock-list" class="feed"></ul>
 
+      <details class="hw">
+        <summary>وضع التشغيل والتتبع</summary>
+        <label for="set-mode">وضع الجهاز</label>
+        <select id="set-mode">
+          <option value="tracking">تتبع مستمر — يرسل الموقع دائماً</option>
+          <option value="standby">توفير البطارية — ينام بين الإرسالات</option>
+        </select>
+
+        <div class="arrival-row">
+          <div>
+            <label for="set-awake">فترة الإرسال</label>
+            <select id="set-awake">
+              <option value="15">كل 15 ثانية</option>
+              <option value="30" selected>كل 30 ثانية</option>
+              <option value="60">كل دقيقة</option>
+              <option value="120">كل دقيقتين</option>
+            </select>
+          </div>
+          <div>
+            <label for="set-motion">حساسية الحركة</label>
+            <select id="set-motion">
+              <option value="63" selected>عالية</option>
+              <option value="126">متوسطة (الافتراضي)</option>
+              <option value="500">منخفضة</option>
+            </select>
+          </div>
+        </div>
+
+        <p class="muted">
+          التتبع المستمر يعرض حركة المركبة لحظة بلحظة، لكنه يستهلك البطارية خلال
+          10–20 يوماً بدل عدة أشهر — أي أن الجهاز يحتاج شحناً دورياً.
+        </p>
+
+        <button id="apply-settings" class="btn btn-primary btn-block">تطبيق الإعدادات</button>
+      </details>
+
       <h3>الفتح التلقائي عند الوصول</h3>
       <form id="arrival-form" class="arrival-form">
         <label for="arrival-location">الموقع</label>

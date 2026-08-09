@@ -640,6 +640,32 @@ async function loadSubLocks(deviceId) {
   }
 }
 
+// --- Device settings --------------------------------------------------------
+
+$('apply-settings').addEventListener('click', async () => {
+  const deviceId = state.selectedId;
+  if (!deviceId) return;
+
+  const tracking = $('set-mode').value === 'tracking';
+  try {
+    await api(`/api/devices/${deviceId}/settings`, {
+      method: 'POST',
+      body: JSON.stringify({
+        tracking,
+        awakeSeconds: Number($('set-awake').value),
+        // In tracking mode the device never sleeps, so the RTC interval is
+        // irrelevant; leave it long so switching back to standby is sane.
+        sleepMinutes: tracking ? 30 : 30,
+        motionThreshold: Number($('set-motion').value),
+      }),
+    });
+    toast('تم إرسال الإعدادات — ستُطبَّق عند استيقاظ الجهاز', 'ok');
+    loadCommands(deviceId);
+  } catch {
+    toast('تعذّر إرسال الإعدادات', 'bad');
+  }
+});
+
 // --- Arrival unlocks --------------------------------------------------------
 
 /**

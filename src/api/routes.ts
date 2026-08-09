@@ -423,6 +423,72 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     return rows;
   });
 
+  /**
+   * Device operating mode.
+   *
+   * Tracking mode is the difference between an asset monitor and a live
+   * tracker. Standby sleeps for up to 30 minutes at a time, so a journey can
+   * pass entirely inside a blind window - which is exactly what happened the
+   * first time we tried to watch a truck drive.
+   */
+  app.post('/api/devices/:id/settings', async (req, reply) => {
+    const id = deviceIdOf(req, reply);
+    if (!id) return reply;
+
+    const b = (req.body ?? {}) as {
+      tracking?: boolean;
+      awakeSeconds?: number;
+      sleepMinutes?: number;
+      motionThreshold?: number;
+    };
+
+    const queued: { type: string; payload: string; reason: string }[] = [];
+
+    if (typeof b.tracking === 'boolean') {
+      queued.push({
+        type: 'set_tracking',
+        payload: `(P54,1,${b.tracking ? 1 : 0})`,
+        reason: b.tracking ? 'تفعيل التتبع المستمر' : 'إيقاف التتبع المستمر',
+      });
+    }
+
+    if (b.awakeSeconds != null || b.sleepMinutes != null) {
+      // P04 sets both at once, so send whatever the caller did not specify at
+      // its documented default rather than inventing one.
+      const awake = Math.min(Math.max(Math.round(Number(b.awakeSeconds) || 60), 5), 3600);
+      const sleep = Math.min(Math.max(Math.round(Number(b.sleepMinutes) || 30), 5), 1440);
+      queued.push({
+        type: 'set_intervals',
+        payload: `(P04,1,${awake},${sleep})`,
+        reason: `فترة الإرسال ${awake} ثانية`,
+      });
+    }
+
+    if (b.motionThreshold != null) {
+      // 0 disables motion detection entirely; otherwise 63-8000 mg.
+      const raw = Math.round(Number(b.motionThreshold));
+      const mg = raw === 0 ? 0 : Math.min(Math.max(raw, 63), 8000);
+      queued.push({
+        type: 'set_motion',
+        payload: `(P37,1,${mg})`,
+        reason: `حساسية الاهتزاز ${mg} mg`,
+      });
+    }
+
+    if (queued.length === 0) return reply.code(400).send({ error: 'nothing_to_change' });
+
+    for (const c of queued) {
+      await pool.query(
+        `INSERT INTO commands (device_id, command_type, payload, requested_by, reason, expires_at)
+         VALUES ($1, $2, $3, $4, $5, now() + interval '6 hours')`,
+        [id, c.type, c.payload, actorOf(req), c.reason],
+      );
+    }
+    await audit(req, 'device_settings_changed', id, { queued });
+
+    return { queued: queued.length };
+  });
+
   // --- Locations catalogue ------------------------------------------------
 
   app.get('/api/locations', async () => {
