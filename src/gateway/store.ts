@@ -573,7 +573,7 @@ export async function resolveCommandFromResponse(
        SELECT id FROM commands
         WHERE device_id = $1
           AND status = 'sent'
-          AND payload LIKE $2
+          AND payload LIKE ANY($2::text[])
         ORDER BY sent_at DESC LIMIT 1
      )
      UPDATE commands c
@@ -584,9 +584,55 @@ export async function resolveCommandFromResponse(
        FROM matched m
       WHERE c.id = m.id
       RETURNING c.id`,
-    [deviceId, `(${commandWord}%`, ok, response.slice(0, 500)],
+    [deviceId, patternsFor(commandWord), ok, response.slice(0, 500)],
   );
   return rows[0]?.id ?? null;
+}
+
+/**
+ * How a command's payload can be recognised from the response's command word.
+ *
+ * P-commands lead with the word: `(P43,123456)`. WLNET commands bury it after
+ * the device id and a serial: `(8055430364,1,123,WLNET,8,1,1,5,E03B60000A)`,
+ * so a leading-anchor match never fires and the command hangs at 'sent'.
+ *
+ * Both WLNET shapes are matched explicitly rather than with a bare wildcard,
+ * because `%WLNET,1%` would also match WLNET,15 and WLNET,18.
+ */
+function patternsFor(commandWord: string): string[] {
+  return commandWord.startsWith('WLNET')
+    ? [`%,${commandWord},%`, `%,${commandWord})`]
+    : [`(${commandWord}%`];
+}
+
+/**
+ * Confirm a sub-lock unlock from the sub-lock's own report.
+ *
+ * The WLNET,8 response is only an echo — it carries no success flag, and means
+ * the master accepted the command for relay, not that the valve opened. The
+ * sub-lock reporting itself unlocked is the first real evidence, and it
+ * arrives later over LoRa.
+ *
+ * Matched on the sub-lock id inside the payload, which is where it already is.
+ */
+export async function confirmSubLockUnlock(masterId: string, peripheralId: string): Promise<void> {
+  await pool.query(
+    `WITH matched AS (
+       SELECT id FROM commands
+        WHERE device_id = $1
+          AND status = 'sent'
+          AND command_type = 'unlock_sublock'
+          AND payload LIKE '%' || $2 || '%'
+          -- The command's own effective window is at most 5 minutes; allow for
+          -- LoRa relay and the master's reporting lag on top.
+          AND sent_at > now() - interval '30 minutes'
+        ORDER BY sent_at DESC LIMIT 1
+     )
+     UPDATE commands c
+        SET status = 'confirmed', confirmed_at = now()
+       FROM matched m WHERE c.id = m.id`,
+    [masterId, peripheralId],
+  );
 }
 
 /**

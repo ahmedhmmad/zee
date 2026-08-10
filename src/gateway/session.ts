@@ -213,6 +213,13 @@ export class DeviceSession {
         }
         await store.recordPeripheralReading(frame.deviceId, decoded);
 
+        // The sub-lock reporting itself open is the only real evidence a
+        // valve unlock worked: the WLNET,8 response is a bare echo from the
+        // master with no success flag in it.
+        if (decoded.locked === false) {
+          await store.confirmSubLockUnlock(frame.deviceId, decoded.peripheralId);
+        }
+
         const lockState =
           decoded.locked === null ? '' : decoded.locked ? ' LOCKED' : ' UNLOCKED';
         this.log(

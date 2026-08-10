@@ -651,6 +651,9 @@ async function loadSubLocks(deviceId) {
 
         const alarming = s.comms_lost_alarm || s.back_cover_open === true || s.locked === false;
 
+        // Valve locks can be opened; temperature sensors obviously cannot.
+        const unlockable = s.device_type === 'jt709_sub_lock' || s.device_type === 'jt802_valve_lock';
+
         return `<li class="${alarming ? 'bad' : ''}">
           <div class="row">
             <strong class="ltr-inline">${escapeHtml(s.peripheral_id)}</strong>
@@ -658,13 +661,61 @@ async function loadSubLocks(deviceId) {
           </div>
           <div class="muted">${SUB_TYPES[s.device_type] ?? s.device_type} · ${bits.map(escapeHtml).join(' · ')}</div>
           <div class="when">${fmtAgo(s.last_seen_at)}</div>
+          ${
+            unlockable
+              ? `<button class="btn btn-ghost btn-xs sublock-unlock" data-sub="${escapeHtml(s.peripheral_id)}">فتح هذا القفل</button>`
+              : ''
+          }
         </li>`;
       })
       .join('');
+
+    for (const btn of list.querySelectorAll('.sublock-unlock')) {
+      btn.addEventListener('click', () => openSubLockDialog(deviceId, btn.dataset.sub));
+    }
   } catch {
     list.innerHTML = '<li class="empty">تعذّر التحميل</li>';
   }
 }
+
+/**
+ * Unlocking a valve lock always needs somebody at the truck.
+ *
+ * The sub-lock sleeps at ~60uA to last three years on a battery that cannot be
+ * recharged, so it does not listen continuously. The platform authorises and
+ * the master holds the command; the driver presses the wake button and the
+ * lock collects it. The dialog says this, because an operator who expects a
+ * remote unlock to just happen will conclude the system is broken.
+ */
+function openSubLockDialog(deviceId, subId) {
+  $('sub-unlock-id').textContent = subId;
+  $('sub-unlock-reason').value = '';
+  $('sub-unlock-modal').dataset.deviceId = deviceId;
+  $('sub-unlock-modal').dataset.subId = subId;
+  $('sub-unlock-modal').hidden = false;
+  $('sub-unlock-reason').focus();
+}
+
+$('sub-unlock-cancel').addEventListener('click', () => ($('sub-unlock-modal').hidden = true));
+
+$('sub-unlock-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const modal = $('sub-unlock-modal');
+  const { deviceId, subId } = modal.dataset;
+  const reason = $('sub-unlock-reason').value.trim();
+  modal.hidden = true;
+
+  try {
+    await api(`/api/devices/${deviceId}/sublocks/${subId}/unlock`, {
+      method: 'POST',
+      body: JSON.stringify({ reason, windowMinutes: 5 }),
+    });
+    toast('أُرسل الأمر — اضغط زر الإيقاظ على القفل الفرعي خلال 5 دقائق', 'ok');
+    loadCommands(deviceId);
+  } catch {
+    toast('تعذّر إرسال أمر فتح القفل الفرعي', 'bad');
+  }
+});
 
 /**
  * Draw where the vehicle has actually been.

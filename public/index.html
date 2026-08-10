@@ -442,6 +442,32 @@
   <ul id="locations-list" class="locations-list"></ul>
 </div>
 
+<!-- تأكيد فتح القفل الفرعي -->
+<div id="sub-unlock-modal" class="modal" hidden>
+  <form class="modal-card" id="sub-unlock-form">
+    <h2>فتح قفل الصمام</h2>
+    <p class="warn">
+      القفل الفرعي <strong id="sub-unlock-id" class="ltr-inline"></strong>
+      لا يمكن فتحه عن بُعد بالكامل: فهو ينام للحفاظ على بطاريته التي تدوم ثلاث
+      سنوات، ولا يستقبل الأوامر إلا عند إيقاظه.
+    </p>
+    <p class="muted">
+      بعد إرسال الأمر، يجب على شخص عند الشاحنة <strong>الضغط على زر الإيقاظ
+      لمدة ثانيتين خلال 5 دقائق</strong>. وإن كان الزر قد ضُغط قبل إرسال الأمر،
+      فانتظر حتى ينطفئ المؤشر الأزرق ثم اضغطه من جديد.
+    </p>
+
+    <label for="sub-unlock-reason">سبب الفتح (إلزامي)</label>
+    <input type="text" id="sub-unlock-reason" required minlength="3"
+           placeholder="مثال: تفريغ الخزان رقم 2" />
+
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="sub-unlock-cancel">إلغاء</button>
+      <button type="submit" class="btn btn-danger">إرسال الأمر</button>
+    </div>
+  </form>
+</div>
+
 <!-- تأكيد الفتح -->
 <div id="unlock-modal" class="modal" hidden>
   <form class="modal-card" id="unlock-form">

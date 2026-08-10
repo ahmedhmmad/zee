@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { pool } from '../db.ts';
 import { apiConfig } from './config.ts';
 import { tileRoutes } from './tiles.ts';
+import { encode } from '../protocol/index.ts';
 
 const DEVICE_ID = /^\d{10}$/;
 
@@ -421,6 +422,66 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
       [id],
     );
     return rows;
+  });
+
+  /**
+   * Unlock one valve sub-lock, relayed by the master over LoRa.
+   *
+   * Unlike a master unlock this is never fully remote. The sub-lock sleeps at
+   * ~60uA to get three years from a non-rechargeable battery, so it cannot
+   * listen continuously: somebody at the truck presses its wake button and the
+   * master hands the command over. The platform authorises; the driver
+   * actuates. The response says so plainly rather than implying it is done.
+   */
+  app.post('/api/devices/:id/sublocks/:subId/unlock', async (req, reply) => {
+    const id = deviceIdOf(req, reply);
+    if (!id) return reply;
+
+    const subId = String((req.params as { subId?: string }).subId ?? '').toUpperCase();
+    if (!/^[0-9A-F]{10}$/.test(subId)) {
+      return reply.code(400).send({ error: 'invalid_sublock_id' });
+    }
+
+    const { reason, windowMinutes } = (req.body ?? {}) as {
+      reason?: string;
+      windowMinutes?: number;
+    };
+    if (!reason || reason.trim().length < 3) {
+      return reply.code(400).send({ error: 'reason_required' });
+    }
+
+    const { rowCount } = await pool.query(
+      'SELECT 1 FROM sub_devices WHERE master_id = $1 AND peripheral_id = $2',
+      [id, subId],
+    );
+    if (rowCount !== 1) return reply.code(404).send({ error: 'sublock_not_bound' });
+
+    // The manual caps the effective window at 5 minutes, and for good reason:
+    // a longer one leaves an unlock lurking to fire on some later wake nobody
+    // is expecting.
+    const window = Math.min(Math.max(Math.round(Number(windowMinutes) || 5), 1), 5);
+    const payload = encode.wlnetUnlockSubLock(id, subId, window).toString('latin1');
+
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO commands (device_id, command_type, payload, requested_by, reason, status, expires_at, metadata)
+       VALUES ($1, 'unlock_sublock', $2, $3, $4, 'queued', now() + interval '30 minutes', $5)
+       RETURNING id`,
+      [id, payload, actorOf(req), reason.trim(), JSON.stringify({ subLockId: subId, windowMinutes: window })],
+    );
+
+    await audit(req, 'sublock_unlock_requested', id, {
+      subLockId: subId,
+      reason: reason.trim(),
+      windowMinutes: window,
+    });
+
+    return {
+      commandId: rows[0]!.id,
+      subLockId: subId,
+      windowMinutes: window,
+      // Stated explicitly so no caller mistakes queuing for opening.
+      requiresButtonPress: true,
+    };
   });
 
   /**
