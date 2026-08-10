@@ -1,7 +1,7 @@
 # Zee — Jointech lock platform
 
 Monitoring and remote unlock for Jointech JT701D master locks (and JT709EX
-explosion-proof valve sub-locks) on fuel tankers. Operating region: Tripoli, Libya.
+explosion-proof valve sub-locks) on fuel tankers. 
 
 Built against the Jointech JT701D user manual, JT709EX user manual, and
 `JT701D/E Protocol Manual V1.9.5`. Those PDFs are copyright Shenzhen Joint
@@ -126,24 +126,6 @@ Per device, before it goes on a truck:
 | `(P10,1,120)` | SMS alarm timezone offset: Libya is UTC+2. |
 | `(P94,1,3)` | Enable IMEI + fence ID in P45 reports. |
 
-## Notes and constraints
 
-- **Every timestamp in the protocol is UTC.** Storage is UTC throughout;
-  conversion to Africa/Tripoli (UTC+2, no DST) happens only in the UI.
-- **`sent` is not `confirmed`.** A successful socket write proves nothing about
-  whether the lock opened. Only the device's own P45 report closes an unlock.
-- **Devices sleep.** Commands wait in Postgres until the device reconnects,
-  and carry a TTL so a stale authorisation cannot fire hours later.
-- **The protocol has no authentication.** Device identity is a 10-digit number
-  in plaintext. Forged telemetry is possible; forged unlocks are not, since
-  passwords are verified on-device. The `devices` allowlist and
-  `rejected_frames` quarantine are the current mitigations — a private APN with
-  a VPN tunnel is the real fix.
 
-## Blocked
 
-Sub-lock (JT709EX) support needs `JT126 Temperature Sensor and JT709 Sub Lock
-Integration Manual V1.4` from Jointech to decode the `WLNET,5` payload.
-Peripheral frames are currently received, un-escaped and logged, but not
-interpreted. The connection handshake may also need adjusting once
-`JT701D/E Protocol - Platform Integration Guide V1.4` is available.
