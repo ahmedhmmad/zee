@@ -412,7 +412,7 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     const id = deviceIdOf(req, reply);
     if (!id) return reply;
     const { rows } = await pool.query(
-      `SELECT peripheral_id, name, device_type, last_seen_at, voltage,
+      `SELECT peripheral_id, name, device_type, last_seen_at, voltage, bound_confirmed_at,
               battery_percent, rssi, locked, rope_pulled_out, back_cover_open,
               charging, event_code, event_name, lock_cycles, rfid_card,
               comms_lost_alarm, low_voltage_alarm, temperature_c, humidity_percent
@@ -422,6 +422,28 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
       [id],
     );
     return rows;
+  });
+
+  /**
+   * Ask the master which peripherals it actually has bound.
+   *
+   * Needed because a JT709 defaults to no LoRa heartbeat, so a newly fitted
+   * valve lock stays invisible until somebody presses its wake button. This
+   * makes it appear as soon as the master answers.
+   */
+  app.post('/api/devices/:id/sublocks/refresh', async (req, reply) => {
+    const id = deviceIdOf(req, reply);
+    if (!id) return reply;
+
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO commands (device_id, command_type, payload, requested_by, reason, status, expires_at)
+       VALUES ($1, 'query_bound_peripherals', $2, $3, 'refresh bound peripheral list', 'queued',
+               now() + interval '2 hours')
+       RETURNING id`,
+      [id, encode.wlnetQueryBound(id).toString('latin1'), actorOf(req)],
+    );
+    await audit(req, 'sublocks_refresh_requested', id, { commandId: rows[0]!.id });
+    return { commandId: rows[0]!.id };
   });
 
   /**

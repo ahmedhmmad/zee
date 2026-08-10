@@ -624,12 +624,22 @@ async function loadSubLocks(deviceId) {
   try {
     const subs = await api(`/api/devices/${deviceId}/sublocks`);
     if (!subs.length) {
-      list.innerHTML = '<li class="empty">لا توجد أقفال فرعية مرتبطة</li>';
+      list.innerHTML =
+        '<li class="empty">لا توجد أقفال فرعية معروفة — اضغط "تحديث القائمة" لسؤال الجهاز</li>';
       return;
     }
     list.innerHTML = subs
       .map((s) => {
-        const state = s.comms_lost_alarm
+        // Bound but never heard from: the master lists it, yet it has sent
+        // nothing. Normal for a freshly fitted lock with no LoRa heartbeat.
+        const neverReported = !s.last_seen_at;
+        const unbound = !s.bound_confirmed_at && !neverReported;
+
+        const state = neverReported
+          ? '<span class="pill pill-warn">مرتبط — لم يُرسل بعد</span>'
+          : unbound
+            ? '<span class="pill pill-muted">لم يعد مرتبطاً</span>'
+            : s.comms_lost_alarm
           ? '<span class="pill pill-danger">انقطع الاتصال بالقفل</span>'
           : s.locked === true
             ? '<span class="pill pill-ok">مقفل</span>'
@@ -638,6 +648,9 @@ async function loadSubLocks(deviceId) {
               : '<span class="pill pill-muted">—</span>';
 
         const bits = [];
+        if (neverReported) {
+          bits.push('اضغط زر الإيقاظ على القفل ليُرسل حالته لأول مرة');
+        }
         if (s.battery_percent != null) bits.push(`البطارية ${s.battery_percent}%`);
         if (s.voltage != null) bits.push(`${Number(s.voltage).toFixed(2)} فولت`);
         if (s.rssi != null) bits.push(`إشارة ${s.rssi} dBm`);
@@ -687,6 +700,17 @@ async function loadSubLocks(deviceId) {
  * lock collects it. The dialog says this, because an operator who expects a
  * remote unlock to just happen will conclude the system is broken.
  */
+$('sublock-refresh').addEventListener('click', async () => {
+  const deviceId = state.selectedId;
+  if (!deviceId) return;
+  try {
+    await api(`/api/devices/${deviceId}/sublocks/refresh`, { method: 'POST' });
+    toast('طُلبت قائمة الأقفال من الجهاز — ستظهر عند استجابته', 'ok');
+  } catch {
+    toast('تعذّر طلب القائمة', 'bad');
+  }
+});
+
 function openSubLockDialog(deviceId, subId) {
   $('sub-unlock-id').textContent = subId;
   $('sub-unlock-reason').value = '';

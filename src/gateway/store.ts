@@ -615,6 +615,39 @@ function patternsFor(commandWord: string): string[] {
  *
  * Matched on the sub-lock id inside the payload, which is where it already is.
  */
+/**
+ * Record what a master says it has bound, from a WLNET,1 reply.
+ *
+ * Creates a row for any peripheral we have never heard from, so a freshly
+ * fitted valve lock is visible immediately rather than only once somebody
+ * presses its wake button. Type is left NULL until it reports and tells us.
+ *
+ * Peripherals the master no longer lists have their confirmation cleared
+ * rather than being deleted: binding is destructive - it replaces the whole
+ * list - so a rebind that silently dropped a valve lock is exactly the thing
+ * an operator needs to see, not have quietly tidied away.
+ */
+export async function recordBoundPeripherals(masterId: string, ids: string[]): Promise<void> {
+  const normalised = ids.map((id) => id.toUpperCase());
+
+  for (const id of normalised) {
+    await pool.query(
+      `INSERT INTO sub_devices (peripheral_id, master_id, bound_confirmed_at)
+       VALUES ($1, $2, now())
+       ON CONFLICT (peripheral_id) DO UPDATE SET
+         master_id = EXCLUDED.master_id,
+         bound_confirmed_at = now()`,
+      [id, masterId],
+    );
+  }
+
+  await pool.query(
+    `UPDATE sub_devices SET bound_confirmed_at = NULL
+      WHERE master_id = $1 AND NOT (peripheral_id = ANY($2::text[]))`,
+    [masterId, normalised],
+  );
+}
+
 export async function confirmSubLockUnlock(masterId: string, peripheralId: string): Promise<void> {
   await pool.query(
     `WITH matched AS (

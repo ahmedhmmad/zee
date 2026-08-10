@@ -256,6 +256,16 @@ export class DeviceSession {
         const isStatic = frame.command === 'P43';
         const isDynamic = frame.command === 'P52' && frame.params[0] === '3';
 
+        // WLNET,1 lists what the master has bound. The reply shape varies -
+        // sometimes with a leading function digit, sometimes without - so pick
+        // out anything that looks like a peripheral id rather than counting
+        // fields.
+        if (frame.command === 'WLNET,1') {
+          const ids = frame.params.filter((p) => /^[0-9A-Fa-f]{10}$/.test(p) && /[A-Fa-f]/.test(p));
+          await store.recordBoundPeripherals(frame.deviceId, ids);
+          this.log(`bound peripherals: ${ids.length ? ids.join(', ') : 'none'}`);
+        }
+
         // P01 answers "<firmware string>,<battery>%" — worth keeping on the
         // device record: it determines which commands the unit supports.
         if (frame.command === 'P01' && frame.params[0]) {
