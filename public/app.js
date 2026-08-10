@@ -258,6 +258,9 @@ function syncMarkers() {
     }
     state.map.setMarker(device.device_id, device.latitude, device.longitude, {
       title: device.name,
+      // Plate first: it is short, unique, and what a dispatcher says on the
+      // radio. The full name stays on hover and in the panel.
+      label: device.plate_number || device.name,
       heading: Number(device.heading_deg ?? 0),
       moving: isMoving(device),
       kind:

@@ -213,9 +213,10 @@ export function wlnetUnlockSubLock(deviceId: string, subLockId: string, minutes 
  * sub-lock then says nothing while asleep, to protect a battery that has to
  * last three years. `alarmSeconds` 0 disables the loss alarm.
  *
- * This is the setting that decides whether a sub-lock can collect a queued
- * unlock without somebody pressing its button. Shorter beat, faster response,
- * shorter battery life.
+ * The manual describes this purely as loss-alarm detection. Whether a
+ * heartbeat wake also lets the sub-lock collect a queued unlock is NOT stated
+ * anywhere - plausible, since it is a wake like any other, but untested and
+ * not promised. Do not rely on it until it has been observed on hardware.
  */
 export function wlnetSetHeartbeat(deviceId: string, beatSeconds: number, alarmSeconds: number): Buffer {
   const clamp = (v: number) => (v <= 0 ? 0 : Math.min(Math.max(Math.round(v), 5), 86400));

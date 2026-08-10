@@ -457,3 +457,28 @@ select {
 .lagging { color: var(--warn); }
 
 .sublock-unlock { margin-block-start: .5rem; }
+
+/* --- Map marker labels ---------------------------------------------------- */
+
+/*
+ * The label sits below the glyph and must stay upright and unrotated while the
+ * arrow turns. text-shadow gives the halo that map labels need to stay legible
+ * over both roads and satellite imagery.
+ */
+.truck-marker { position: relative; }
+.truck-label {
+  position: absolute;
+  inset-block-start: 100%;
+  inset-inline-start: 50%;
+  transform: translateX(-50%);
+  margin-block-start: 3px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  color: #fff;
+  text-shadow:
+     0 0 3px #0f1417, 0 0 3px #0f1417,
+     1px 1px 2px #0f1417, -1px -1px 2px #0f1417;
+  pointer-events: none;
+}

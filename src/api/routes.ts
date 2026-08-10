@@ -760,7 +760,7 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     const id = deviceIdOf(req, reply);
     if (!id) return reply;
     const { rows } = await pool.query(
-      `SELECT a.id, a.name, a.reason, a.radius_m, a.is_armed, a.created_by,
+      `SELECT a.id, a.name, a.reason, a.radius_m, a.is_armed, a.created_by, a.include_sublocks,
               a.created_at, a.expires_at, a.triggered_at, a.triggered_distance_m,
               a.triggered_command_id,
               ST_Y(a.location::geometry) AS latitude,
@@ -807,6 +807,7 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
       radiusM?: number;
       reason?: string;
       expiresInHours?: number;
+      includeSubLocks?: boolean;
     };
 
     if (!body.reason || body.reason.trim().length < 3) {
@@ -856,13 +857,14 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     const radius = Math.min(Math.max(Math.round(Number(body.radiusM) || defaultRadius), 30), 5000);
     const hours = Math.min(Math.max(Number(body.expiresInHours) || 12, 1), 72);
     if (!name) name = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+    const includeSubLocks = body.includeSubLocks === true;
 
     const { rows } = await pool.query<{ id: number }>(
-      `INSERT INTO arrival_unlocks (device_id, name, location, radius_m, reason, created_by, expires_at, location_id)
+      `INSERT INTO arrival_unlocks (device_id, name, location, radius_m, reason, created_by, expires_at, location_id, include_sublocks)
        VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6, $7,
-               now() + ($8 || ' hours')::interval, $9)
+               now() + ($8 || ' hours')::interval, $9, $10)
        RETURNING id`,
-      [id, name, lon, lat, radius, body.reason.trim(), actorOf(req), hours, locationId],
+      [id, name, lon, lat, radius, body.reason.trim(), actorOf(req), hours, locationId, includeSubLocks],
     );
 
     await audit(req, 'arrival_unlock_armed', id, {
@@ -874,6 +876,7 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
       radiusM: radius,
       reason: body.reason.trim(),
       expiresInHours: hours,
+      includeSubLocks,
     });
 
     return { id: rows[0]!.id, name, radiusM: radius, expiresInHours: hours };

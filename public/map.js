@@ -114,6 +114,9 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
           fillOpacity: 1,
           strokeColor: '#ffffff',
           strokeWeight: 1.5,
+          // Sit the name clear of the glyph. labelOrigin is in path units, so
+          // it scales with the symbol - hence a different value per shape.
+          labelOrigin: new google.maps.Point(0, 4.2),
         }
       : {
           path: google.maps.SymbolPath.CIRCLE,
@@ -122,8 +125,23 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
           fillOpacity: 1,
           strokeColor: '#ffffff',
           strokeWeight: 2,
+          labelOrigin: new google.maps.Point(0, 2.1),
         };
   };
+
+  /**
+   * Marker labels have no halo, so the colour has to change with the basemap
+   * or the name disappears against it. Tracked here and re-applied on theme
+   * change, since Google gives no way to restyle a label in place.
+   */
+  let currentTheme = theme;
+  const labelFor = (text) => ({
+    text: text || ' ',
+    color: currentTheme === 'light' ? '#1b2429' : '#ffffff',
+    fontSize: '12px',
+    fontWeight: '700',
+    fontFamily: 'Cairo, system-ui, sans-serif',
+  });
 
   let track = null;
 
@@ -144,9 +162,15 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
       });
     },
     setTheme(next) {
+      currentTheme = next;
       map.setOptions({ styles: next === 'light' ? null : GOOGLE_DARK });
+      // Re-apply every label so the text stays legible against the new basemap.
+      for (const marker of markers.values()) {
+        const label = marker.getLabel();
+        if (label?.text) marker.setLabel(labelFor(label.text));
+      }
     },
-    setMarker(id, lat, lon, { title, kind, heading, moving }) {
+    setMarker(id, lat, lon, { title, label, kind, heading, moving }) {
       let marker = markers.get(id);
       if (!marker) {
         marker = new google.maps.Marker({ map, position: { lat, lng: lon }, title });
@@ -157,6 +181,7 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
         marker.setTitle(title);
       }
       marker.setIcon(iconFor(kind, heading, moving));
+      marker.setLabel(label ? labelFor(label) : null);
     },
     removeMarker(id) {
       const marker = markers.get(id);
@@ -360,12 +385,14 @@ function createOsmMap(container, onMarkerClick) {
       // Sources cannot be added before the style has loaded.
       map.isStyleLoaded() ? apply() : map.once('load', apply);
     },
-    setMarker(id, lat, lon, { title, kind, heading, moving }) {
+    setMarker(id, lat, lon, { title, label, kind, heading, moving }) {
       let marker = markers.get(id);
       if (!marker) {
         const el = document.createElement('div');
         el.className = 'truck-marker';
-        el.innerHTML = '<span class="truck-arrow">➤</span>';
+        // The label is a sibling of the glyph so rotating the arrow does not
+        // rotate the text with it.
+        el.innerHTML = '<span class="truck-arrow">➤</span><span class="truck-label"></span>';
         el.addEventListener('click', () => onMarkerClick(id));
         marker = new maplibregl.Marker({ element: el }).setLngLat([lon, lat]).addTo(map);
         markers.set(id, marker);
@@ -377,6 +404,7 @@ function createOsmMap(container, onMarkerClick) {
       el.classList.toggle('offline', kind === 'offline');
       el.classList.toggle('moving', !!moving);
       el.title = title;
+      el.querySelector('.truck-label').textContent = label ?? '';
       // The glyph points east at rest, so subtract 90 to align with bearing.
       el.querySelector('.truck-arrow').style.transform = moving
         ? `rotate(${(heading ?? 0) - 90}deg)`

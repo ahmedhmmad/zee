@@ -7,7 +7,7 @@
  */
 
 import { pool } from '../db.ts';
-import type { PositionFrame } from '../protocol/index.ts';
+import { encode, type PositionFrame } from '../protocol/index.ts';
 
 export interface TriggeredArrival {
   id: number;
@@ -15,6 +15,8 @@ export interface TriggeredArrival {
   reason: string;
   distanceM: number;
   commandId: number | null;
+  /** Valve locks also queued, if the rule asked for them. */
+  subLocks: number;
 }
 
 export async function checkArrivalUnlocks(p: PositionFrame): Promise<TriggeredArrival[]> {
@@ -48,6 +50,7 @@ export async function checkArrivalUnlocks(p: PositionFrame): Promise<TriggeredAr
       name: string;
       reason: string;
       distance_m: string;
+      include_sublocks: boolean;
     }>(
       `UPDATE arrival_unlocks a
           SET is_armed = false,
@@ -57,7 +60,7 @@ export async function checkArrivalUnlocks(p: PositionFrame): Promise<TriggeredAr
           AND a.is_armed
           AND a.expires_at > now()
           AND ST_DWithin(a.location, $2::geography, a.radius_m)
-        RETURNING a.id, a.name, a.reason,
+        RETURNING a.id, a.name, a.reason, a.include_sublocks,
                   ST_Distance(a.location, $2::geography) AS distance_m`,
       [p.deviceId, `SRID=4326;POINT(${p.longitude} ${p.latitude})`],
     );
@@ -118,7 +121,44 @@ export async function checkArrivalUnlocks(p: PositionFrame): Promise<TriggeredAr
         ],
       );
 
-      triggered.push({ id: rule.id, name: rule.name, reason: rule.reason, distanceM, commandId });
+      // Optionally release the valve locks as well. The platform can only
+      // place the command with the master; the sub-lock still has to be woken
+      // at the truck, so this queues intent rather than guaranteeing an open
+      // valve.
+      let subLocks = 0;
+      if (rule.include_sublocks) {
+        const { rows: subs } = await client.query<{ peripheral_id: string }>(
+          `SELECT peripheral_id FROM sub_devices
+            WHERE master_id = $1
+              AND bound_confirmed_at IS NOT NULL
+              AND (device_type IS NULL OR device_type IN ('jt709_sub_lock', 'jt802_valve_lock'))`,
+          [p.deviceId],
+        );
+
+        for (const sub of subs) {
+          await client.query(
+            `INSERT INTO commands (device_id, command_type, payload, requested_by, reason, status, expires_at, metadata)
+             VALUES ($1, 'unlock_sublock', $2, $3, $4, 'queued', now() + interval '15 minutes', $5)`,
+            [
+              p.deviceId,
+              encode.wlnetUnlockSubLock(p.deviceId, sub.peripheral_id).toString('latin1'),
+              `arrival:${rule.name}`,
+              `${rule.reason} — وصول تلقائي (قفل فرعي)`,
+              JSON.stringify({ subLockId: sub.peripheral_id, arrivalId: rule.id }),
+            ],
+          );
+          subLocks++;
+        }
+      }
+
+      triggered.push({
+        id: rule.id,
+        name: rule.name,
+        reason: rule.reason,
+        distanceM,
+        commandId,
+        subLocks,
+      });
     }
 
     await client.query('COMMIT');
