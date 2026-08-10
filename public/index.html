@@ -305,6 +305,14 @@
         </select>
       </div>
       <div>
+        <label for="trk-wake">مدة العمل بعد كل استيقاظ</label>
+        <select id="trk-wake">
+          <option value="3">3 دقائق — الأوفر للبطارية</option>
+          <option value="5">5 دقائق</option>
+          <option value="10" selected>10 دقائق — الافتراضي</option>
+        </select>
+      </div>
+      <div>
         <label for="trk-sleep">الاستيقاظ الدوري أثناء النوم</label>
         <select id="trk-sleep">
           <option value="5">كل 5 دقائق</option>
@@ -314,6 +322,12 @@
         </select>
       </div>
     </div>
+
+    <p class="muted">
+      عند الإرسال كل 5 ثوانٍ، تعني مدة العمل الطويلة إرسال عشرات النقاط بعد
+      توقّف المركبة دون فائدة. أثناء القيادة يُعيد الاهتزاز ضبط المدة باستمرار،
+      لذا لا تُقصّر المدةُ التتبعَ أثناء الحركة.
+    </p>
 
     <h3>دقة المسار</h3>
     <label class="checkbox">

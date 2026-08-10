@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { pool } from '../db.ts';
 import { apiConfig } from './config.ts';
 import { tileRoutes } from './tiles.ts';
+import { fetchDevices } from './devices-query.ts';
 import { encode } from '../protocol/index.ts';
 
 const DEVICE_ID = /^\d{10}$/;
@@ -58,39 +59,7 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     googleMapsApiKey: apiConfig.googleMapsApiKey || null,
   }));
 
-  app.get('/api/devices', async () => {
-    const { rows } = await pool.query(`
-      SELECT d.device_id, d.name, d.plate_number, d.model,
-             d.imei, d.firmware_version, d.sim_msisdn,
-             -- Never send the password itself to the browser; only whether
-             -- it is still one of the well-known factory defaults.
-             (d.static_password IN ('888888', '123456')) AS static_password_is_default,
-             s.last_seen_at, s.last_position_at, s.is_connected, s.connected_at,
-             ST_Y(s.location::geometry) AS latitude,
-             ST_X(s.location::geometry) AS longitude,
-             s.positioned, s.speed_kph, s.heading_deg, s.satellites,
-             s.battery_percent, s.charging, s.motor_locked, s.rope_inserted,
-             s.gsm_signal, s.wake_source, s.active_alarms,
-             s.mileage_km, s.mcc, s.mnc,
-             -- Most recent lock activity, so the panel can show it without
-             -- the operator having to go hunting through the event log.
-             le.reported_at    AS last_event_at,
-             le.event_source_name AS last_event_source,
-             le.unlock_allowed AS last_event_allowed,
-             le.command_id     AS last_event_command_id
-        FROM devices d
-        LEFT JOIN device_state s ON s.device_id = d.device_id
-        LEFT JOIN LATERAL (
-          SELECT reported_at, event_source_name, unlock_allowed, command_id
-            FROM lock_events
-           WHERE device_id = d.device_id
-           ORDER BY reported_at DESC
-           LIMIT 1
-        ) le ON true
-       WHERE d.is_active
-       ORDER BY d.name`);
-    return rows;
-  });
+  app.get('/api/devices', async () => fetchDevices());
 
   app.get('/api/devices/:id/track', async (req, reply) => {
     const id = deviceIdOf(req, reply);
@@ -520,6 +489,7 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
 
     const b = (req.body ?? {}) as {
       tracking?: boolean;
+      wakeMinutes?: number;
       awakeSeconds?: number;
       sleepMinutes?: number;
       motionThreshold?: number;
@@ -555,6 +525,25 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
         type: 'set_intervals',
         payload: `(P04,1,${awake},${sleep})`,
         reason: `إرسال كل ${awake} ثانية، واستيقاظ كل ${sleep} دقيقة`,
+      });
+    }
+
+    if (b.wakeMinutes != null) {
+      /*
+       * How long the device keeps working after a wake before sleeping again.
+       *
+       * This is the quiet cost of fast reporting. At a five-second interval a
+       * ten-minute default means 120 fixes are sent every time a truck stops -
+       * data and battery spent watching a parked vehicle. Three minutes is
+       * enough to capture the stop and settle, and while the truck is actually
+       * driving continuous vibration keeps resetting the timer anyway, so a
+       * short window costs nothing in transit.
+       */
+      const minutes = clamp(b.wakeMinutes, 3, 10, 10);
+      queued.push({
+        type: 'set_wake_window',
+        payload: `(P39,1,${minutes})`,
+        reason: `العمل ${minutes} دقائق بعد كل استيقاظ`,
       });
     }
 
@@ -655,6 +644,7 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     const queries: [string, string][] = [
       ['query_tracking', '(P54,0)'],
       ['query_intervals', '(P04,0)'],
+      ['query_wake_window', '(P39,0)'],
       ['query_motion', '(P37,0)'],
       ['query_cornering', '(P99,0)'],
       ['query_drift', '(P63,0)'],

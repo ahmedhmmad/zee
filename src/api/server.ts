@@ -16,6 +16,7 @@ import fastifyCookie from '@fastify/cookie';
 import { pool, createListener } from '../db.ts';
 import { apiRoutes } from './routes.ts';
 import { apiConfig } from './config.ts';
+import { fetchDevice } from './devices-query.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, '..', '..', 'public');
@@ -96,6 +97,44 @@ function broadcast(payload: string): void {
   }
 }
 
+/**
+ * Attach the changed vehicle's row to the notification.
+ *
+ * The trigger only tells us *that* something changed. Sending that alone makes
+ * every browser refetch the whole fleet, which at a five-second reporting
+ * interval is hundreds of full list queries a minute. Reading one row here
+ * costs a fraction of that and it is read once for all connected browsers,
+ * not once per browser.
+ *
+ * Coalesced per device: several changes to the same vehicle inside the window
+ * (a position, then a command status) collapse into one push carrying the
+ * final state.
+ */
+const pendingPushes = new Map<string, NodeJS.Timeout>();
+const PUSH_COALESCE_MS = 200;
+
+function pushDeviceUpdate(kind: string, deviceId: string): void {
+  if (sockets.size === 0) return; // nobody watching; skip the query entirely
+  if (pendingPushes.has(deviceId)) return;
+
+  pendingPushes.set(
+    deviceId,
+    setTimeout(() => {
+      pendingPushes.delete(deviceId);
+      void fetchDevice(deviceId)
+        .then((device) => {
+          // A device that vanished mid-flight still deserves a nudge, so the
+          // browser can drop it from the list.
+          broadcast(JSON.stringify({ kind, deviceId, device }));
+        })
+        .catch((err) => {
+          app.log.warn({ err, deviceId }, 'device push failed, falling back to nudge');
+          broadcast(JSON.stringify({ kind, deviceId }));
+        });
+    }, PUSH_COALESCE_MS).unref(),
+  );
+}
+
 await app.register(apiRoutes);
 
 // Serve the single-page UI for any non-API path.
@@ -108,7 +147,16 @@ async function main(): Promise<void> {
   await pool.query('SELECT 1');
 
   // Forward device changes straight to the browsers; no polling anywhere.
-  await createListener('device_update', (payload) => broadcast(payload));
+  await createListener('device_update', (payload) => {
+    try {
+      const { kind, deviceId } = JSON.parse(payload) as { kind?: string; deviceId?: string };
+      if (deviceId) return pushDeviceUpdate(kind ?? 'state', deviceId);
+    } catch {
+      // Malformed payload: fall through and forward it as-is rather than
+      // dropping a change the browser needs to know about.
+    }
+    broadcast(payload);
+  });
 
   await app.listen({ port: apiConfig.port, host: apiConfig.host });
   app.log.info(`UI available on http://${apiConfig.host}:${apiConfig.port}`);

@@ -249,18 +249,75 @@ function hasLocation(d) {
   );
 }
 
+/*
+ * Marker animation.
+ *
+ * Positions arrive as discrete fixes, so a marker that simply jumps looks
+ * broken even when the data is perfect. Sliding between two KNOWN fixes reads
+ * as continuous motion and invents nothing: both endpoints are real
+ * measurements, and the vehicle genuinely was at each of them.
+ *
+ * Note what this deliberately does NOT do: project the marker forward past the
+ * last fix. Extrapolation would keep a truck gliding convincingly along a road
+ * it may have turned off, and on a system that decides whether a tanker is at
+ * an authorised site, a confident guess is worse than an honest pause. When
+ * fixes stop, the marker stops - and fades to say so.
+ */
+const anim = new Map(); // deviceId -> { fromLat, fromLon, toLat, toLon, start, dur, lastFix }
+let animFrame = null;
+
+const easeOut = (t) => 1 - (1 - t) * (1 - t);
+
+function pointNow(a, now) {
+  if (!a.dur) return [a.toLat, a.toLon];
+  const t = Math.min((now - a.start) / a.dur, 1);
+  const k = easeOut(t);
+  return [a.fromLat + (a.toLat - a.fromLat) * k, a.fromLon + (a.toLon - a.fromLon) * k];
+}
+
+function runAnimation() {
+  const now = performance.now();
+  let active = false;
+
+  for (const [id, a] of anim) {
+    if (a.dur && now - a.start < a.dur) active = true;
+    const [lat, lon] = pointNow(a, now);
+    state.map.setMarker(id, lat, lon, a.opts);
+  }
+
+  animFrame = active ? requestAnimationFrame(runAnimation) : null;
+}
+
+/**
+ * How much to trust what is on screen.
+ *
+ * A sleeping truck is silent by design - that is not staleness and must not be
+ * dressed up as a fault. An awake one that has gone quiet is a different
+ * matter: at a five-second interval, a minute of silence means something is
+ * wrong and the marker should stop looking authoritative.
+ */
+function markerFreshness(d) {
+  if (connectionState(d) === 'sleeping') return 'ok';
+  const age = d.last_position_at ? (Date.now() - new Date(d.last_position_at)) / 1000 : Infinity;
+  if (age <= 60) return 'ok';
+  if (age <= 900) return 'aging';
+  return 'stale';
+}
+
 function syncMarkers() {
   if (!state.map) return;
   for (const device of state.devices) {
     if (!hasLocation(device)) {
       state.map.removeMarker(device.device_id);
+      anim.delete(device.device_id);
       continue;
     }
-    state.map.setMarker(device.device_id, device.latitude, device.longitude, {
+    const opts = {
       title: device.name,
       // Plate first: it is short, unique, and what a dispatcher says on the
       // radio. The full name stays on hover and in the panel.
       label: device.plate_number || device.name,
+      freshness: markerFreshness(device),
       heading: Number(device.heading_deg ?? 0),
       moving: isMoving(device),
       kind:
@@ -269,8 +326,42 @@ function syncMarkers() {
           : device.motor_locked === false
             ? 'unlocked'
             : 'locked',
+    };
+
+    const id = device.device_id;
+    const prev = anim.get(id);
+    const now = performance.now();
+    const [curLat, curLon] = prev ? pointNow(prev, now) : [device.latitude, device.longitude];
+    const moved = metresBetween([curLat, curLon], [device.latitude, device.longitude]);
+
+    // Time between this fix and the last one we drew, which is how long the
+    // slide should take for motion to look continuous rather than rushed.
+    const fixMs =
+      prev?.lastFix && device.last_position_at
+        ? new Date(device.last_position_at) - new Date(prev.lastFix)
+        : 0;
+
+    // A jump too large to be one reporting interval of driving is a coverage
+    // gap, not movement we watched. Gliding across it would draw a route the
+    // truck never took, so place it directly instead.
+    const isGap = moved > 800;
+    const dur = isGap || moved < 1 ? 0 : Math.min(Math.max(fixMs || 2000, 800), 6000);
+
+    anim.set(id, {
+      fromLat: curLat,
+      fromLon: curLon,
+      toLat: device.latitude,
+      toLon: device.longitude,
+      start: now,
+      dur,
+      opts,
+      lastFix: device.last_position_at,
     });
+
+    if (!dur) state.map.setMarker(id, device.latitude, device.longitude, opts);
   }
+
+  if (!animFrame) animFrame = requestAnimationFrame(runAnimation);
 }
 
 // --- Rendering --------------------------------------------------------------
@@ -847,6 +938,7 @@ $('tracking-form').addEventListener('submit', async (e) => {
       method: 'POST',
       body: JSON.stringify({
         tracking: $('trk-mode').value === 'tracking',
+        wakeMinutes: Number($('trk-wake').value),
         awakeSeconds: Number($('trk-awake').value),
         sleepMinutes: Number($('trk-sleep').value),
         motionThreshold: Number($('trk-motion').value),
@@ -1396,17 +1488,93 @@ function toast(message, kind) {
 
 // --- Live updates -----------------------------------------------------------
 
+/*
+ * Reconnection is deliberately quiet.
+ *
+ * A dropped socket is usually a passing hiccup - a phone switching cell, a
+ * laptop waking, a proxy timing out - and it recovers within a second or two.
+ * Shouting "disconnected" at that is both wrong and corrosive: an operator who
+ * sees the warning constantly stops believing it, and then misses the one time
+ * it matters.
+ *
+ * So: silent for the first few attempts, a quiet note after that, and a real
+ * warning only once it is genuinely broken. The data on screen is never
+ * cleared - stale data with an honest timestamp beats an empty panel.
+ */
+const RECONNECT_SILENT_MS = 8000;
+const RECONNECT_ALARM_MS = 60000;
+
+let wsAttempt = 0;
+let wsDownSince = null;
+let wsStatusTimer = null;
+
 function connectWebSocket() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${proto}://${location.host}/api/ws`);
 
-  ws.addEventListener('open', () => setStatus('مباشر', 'pill-ok'));
-  ws.addEventListener('message', () => refresh());
-  ws.addEventListener('close', () => {
-    setStatus('انقطع الاتصال — إعادة المحاولة…', 'pill-warn');
-    setTimeout(connectWebSocket, 3000);
+  ws.addEventListener('open', () => {
+    wsAttempt = 0;
+    wsDownSince = null;
+    clearInterval(wsStatusTimer);
+    setStatus('مباشر', 'pill-ok');
+    // Catch up on anything missed while the socket was down.
+    void refresh();
   });
+
+  ws.addEventListener('message', (e) => applyUpdate(e.data));
+
+  ws.addEventListener('close', () => {
+    if (wsDownSince === null) {
+      wsDownSince = Date.now();
+      // Re-evaluate on a timer as well as on each attempt, so the wording
+      // escalates even during a long backoff wait.
+      wsStatusTimer = setInterval(renderConnectionStatus, 2000);
+    }
+    renderConnectionStatus();
+
+    // Exponential backoff, capped: a server that is down should not be hit
+    // every second by every open browser.
+    const delay = Math.min(1000 * 2 ** wsAttempt++, 15000);
+    setTimeout(connectWebSocket, delay);
+  });
+
   ws.addEventListener('error', () => ws.close());
+}
+
+function renderConnectionStatus() {
+  if (wsDownSince === null) return;
+  const down = Date.now() - wsDownSince;
+  if (down < RECONNECT_SILENT_MS) return; // brief blip: say nothing at all
+  if (down < RECONNECT_ALARM_MS) setStatus('يعيد الاتصال…', 'pill-muted');
+  else setStatus('انقطع الاتصال بالخادم', 'pill-danger');
+}
+
+/**
+ * Apply one pushed change.
+ *
+ * The server sends the changed vehicle's row with the notification, so the
+ * common case patches a single entry instead of refetching the fleet. The
+ * bare-nudge form is still honoured, because a malformed or partial payload
+ * must never leave the console silently out of date.
+ */
+function applyUpdate(raw) {
+  let msg;
+  try {
+    msg = JSON.parse(raw);
+  } catch {
+    return void refresh();
+  }
+
+  if (!msg?.deviceId || !msg.device) return void refresh();
+
+  const i = state.devices.findIndex((d) => d.device_id === msg.deviceId);
+  if (i === -1) return void refresh(); // a vehicle we do not know yet
+  state.devices[i] = msg.device;
+
+  renderDeviceList();
+  syncMarkers();
+  followSelected();
+  if (state.selectedId === msg.deviceId) renderDetail();
 }
 
 function setStatus(text, cls) {

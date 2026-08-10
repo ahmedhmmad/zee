@@ -170,7 +170,7 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
         if (label?.text) marker.setLabel(labelFor(label.text));
       }
     },
-    setMarker(id, lat, lon, { title, label, kind, heading, moving }) {
+    setMarker(id, lat, lon, { title, label, kind, heading, moving, freshness }) {
       let marker = markers.get(id);
       if (!marker) {
         marker = new google.maps.Marker({ map, position: { lat, lng: lon }, title });
@@ -182,6 +182,9 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
       }
       marker.setIcon(iconFor(kind, heading, moving));
       marker.setLabel(label ? labelFor(label) : null);
+      // Fade rather than hide: an operator still needs to see roughly where
+      // a truck was, they just must not read it as current.
+      marker.setOpacity(freshness === 'stale' ? 0.35 : freshness === 'aging' ? 0.6 : 1);
     },
     removeMarker(id) {
       const marker = markers.get(id);
@@ -385,7 +388,7 @@ function createOsmMap(container, onMarkerClick) {
       // Sources cannot be added before the style has loaded.
       map.isStyleLoaded() ? apply() : map.once('load', apply);
     },
-    setMarker(id, lat, lon, { title, label, kind, heading, moving }) {
+    setMarker(id, lat, lon, { title, label, kind, heading, moving, freshness }) {
       let marker = markers.get(id);
       if (!marker) {
         const el = document.createElement('div');
@@ -403,6 +406,8 @@ function createOsmMap(container, onMarkerClick) {
       el.classList.toggle('unlocked', kind === 'unlocked');
       el.classList.toggle('offline', kind === 'offline');
       el.classList.toggle('moving', !!moving);
+      el.classList.toggle('aging', freshness === 'aging');
+      el.classList.toggle('stale', freshness === 'stale');
       el.title = title;
       el.querySelector('.truck-label').textContent = label ?? '';
       // The glyph points east at rest, so subtract 90 to align with bearing.

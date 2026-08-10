@@ -485,3 +485,10 @@ select {
 
 .checkline { display: flex; align-items: center; gap: .5rem; margin-block: .6rem; cursor: pointer; }
 .checkline input { inline-size: auto; margin: 0; }
+
+/*
+ * Staleness is shown by fading, not hiding: an operator still needs to see
+ * roughly where a vehicle was, they simply must not read it as current.
+ */
+.truck-marker.aging { opacity: .6; }
+.truck-marker.stale { opacity: .35; }
