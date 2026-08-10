@@ -288,9 +288,14 @@
     <h3>وضع التشغيل</h3>
     <label for="trk-mode">الوضع</label>
     <select id="trk-mode">
-      <option value="tracking">تتبع مستمر — لا ينام، يرسل باستمرار</option>
-      <option value="standby">توفير البطارية — ينام بين الإرسالات</option>
+      <option value="standby" selected>توفير البطارية — ينام عند التوقف، ويستيقظ بالحركة (موصى به)</option>
+      <option value="tracking">تتبع مستمر — لا ينام إطلاقاً ⚠️ يستنزف البطارية خلال أيام</option>
     </select>
+    <p class="muted">
+      في وضع توفير البطارية يستيقظ الجهاز بالاهتزاز، أي أنه يبقى مستيقظاً طوال
+      القيادة من تلقاء نفسه. التتبع المستمر لا يضيف شيئاً أثناء الحركة، لكنه
+      يمنع النوم عند التوقف — واستمراره بالخطأ يُفرغ البطارية خلال أيام.
+    </p>
 
     <div class="arrival-row">
       <div>
@@ -347,10 +352,11 @@
       <div>
         <label for="trk-motion">حساسية الحركة</label>
         <select id="trk-motion">
-          <option value="63" selected>عالية — يستيقظ بأقل حركة</option>
-          <option value="126">متوسطة (الافتراضي)</option>
-          <option value="500">منخفضة</option>
-          <option value="0">إيقاف كشف الحركة</option>
+          <option value="126" selected>متوسطة — الافتراضي من المصنع (موصى به)</option>
+          <option value="200">أقل حساسية — للأجهزة داخل المباني</option>
+          <option value="500">منخفضة — الحركة الواضحة فقط</option>
+          <option value="63">عالية جداً ⚠️ يستيقظ بأي اهتزاز ولا ينام تقريباً</option>
+          <option value="0">إيقاف كشف الحركة — لن يستيقظ بالحركة إطلاقاً</option>
         </select>
       </div>
     </div>
