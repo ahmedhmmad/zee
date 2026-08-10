@@ -26,6 +26,8 @@ export class DeviceSession {
   #known = false;
   #events: SessionEvents;
   #handshakeTimer: NodeJS.Timeout | null = null;
+  #lastInboundAt = Date.now();
+  #inboundWatchdog: NodeJS.Timeout | null = null;
 
   constructor(socket: Socket, events: SessionEvents) {
     this.socket = socket;
@@ -33,7 +35,26 @@ export class DeviceSession {
     this.#events = events;
 
     socket.setKeepAlive(true, 60_000);
+
+    /*
+     * Watch INBOUND silence, not socket idleness.
+     *
+     * Node resets socket.setTimeout on any activity, writes included. So a
+     * device that has gone away is kept "alive" by our own retries: a command
+     * re-sent every minute against a three-minute timeout means the timeout can
+     * never fire, and the console shows a truck as connected indefinitely
+     * while it is actually asleep or out of coverage.
+     *
+     * Only the device saying something proves the device is there.
+     */
     socket.setTimeout(config.gateway.idleTimeoutMs);
+    this.#inboundWatchdog = setInterval(() => {
+      if (Date.now() - this.#lastInboundAt > config.gateway.idleTimeoutMs) {
+        this.log('no inbound data, closing stale connection');
+        socket.destroy();
+      }
+    }, 15_000);
+    this.#inboundWatchdog.unref();
 
     // Drop connections that never send a frame. Scanners hit an open port
     // constantly; without this every one of them lingers and logs.
@@ -65,6 +86,10 @@ export class DeviceSession {
   }
 
   async #onData(chunk: Buffer): Promise<void> {
+    // Proof of life, recorded before any parsing: even a frame we cannot decode
+    // means the device is still on the other end.
+    this.#lastInboundAt = Date.now();
+
     let frames;
     try {
       frames = this.#framer.push(chunk);
@@ -343,6 +368,7 @@ export class DeviceSession {
 
   async #onClose(): Promise<void> {
     if (this.#handshakeTimer) clearTimeout(this.#handshakeTimer);
+    if (this.#inboundWatchdog) clearInterval(this.#inboundWatchdog);
     if (this.#deviceId && this.#known) {
       await store.setConnected(this.#deviceId, false).catch(() => {});
     }
