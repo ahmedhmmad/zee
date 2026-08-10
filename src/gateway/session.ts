@@ -148,7 +148,10 @@ export class DeviceSession {
         // delivery cannot re-trigger an arrival.
         if (isNew) {
           for (const hit of await checkArrivalUnlocks(frame)) {
-            this.log(`ARRIVAL "${hit.name}" — ${hit.distanceM}m — unlock queued (cmd ${hit.commandId})`);
+            this.log(
+              `ARRIVAL "${hit.name}" — ${hit.distanceM}m — unlock queued (cmd ${hit.commandId})` +
+                (hit.subLocks ? ` + ${hit.subLocks} sub-lock(s)` : ''),
+            );
           }
         }
         if (isNew && frame.isAlarm) {

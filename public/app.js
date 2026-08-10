@@ -904,6 +904,7 @@ async function loadArrivals(deviceId) {
     list.innerHTML = [...armed, ...recent]
       .map((a) => {
         const notes = [`نطاق ${a.radius_m} م`, `السبب: ${a.reason}`];
+        if (a.include_sublocks) notes.push('يشمل أقفال الصمامات');
         if (a.is_armed) {
           // Null means the vehicle has no usable fix, not that it is nearby.
           // Saying so is far better than an invented distance.
@@ -1046,6 +1047,7 @@ $('arrival-form').addEventListener('submit', async (e) => {
         locationId,
         radiusM: radius ? Number(radius) : undefined,
         expiresInHours: Number($('arrival-expiry').value),
+        includeSubLocks: $('arrival-sublocks').checked,
         reason: $('arrival-reason').value.trim(),
       }),
     });
