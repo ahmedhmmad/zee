@@ -23,6 +23,12 @@ const SELECT = `
          s.battery_percent, s.charging, s.motor_locked, s.rope_inserted,
          s.gsm_signal, s.wake_source, s.active_alarms,
          s.mileage_km, s.mcc, s.mnc,
+         -- The device's odometer only ever counts up, so "distance today" is
+         -- the span of that counter across today's reports. Derived from the
+         -- counter rather than by summing GPS hops, which would accumulate
+         -- fix noise into tens of phantom kilometres on a parked vehicle.
+         dist.today_km,
+         dist.week_km,
          -- Most recent lock activity, so the panel can show it without
          -- the operator having to go hunting through the event log.
          le.reported_at       AS last_event_at,
@@ -38,6 +44,23 @@ const SELECT = `
        ORDER BY reported_at DESC
        LIMIT 1
     ) le ON true
+    LEFT JOIN LATERAL (
+      -- Africa/Tripoli, not UTC: "today" has to mean the operator's day, or a
+      -- delivery at 01:00 local would be counted against the previous one.
+      SELECT
+        max(mileage_km) FILTER (
+          WHERE reported_at >= date_trunc('day', now() AT TIME ZONE 'Africa/Tripoli')
+                                AT TIME ZONE 'Africa/Tripoli'
+        ) - min(mileage_km) FILTER (
+          WHERE reported_at >= date_trunc('day', now() AT TIME ZONE 'Africa/Tripoli')
+                                AT TIME ZONE 'Africa/Tripoli'
+        ) AS today_km,
+        max(mileage_km) - min(mileage_km) AS week_km
+        FROM positions
+       WHERE device_id = d.device_id
+         AND reported_at >= now() - interval '7 days'
+         AND mileage_km IS NOT NULL
+    ) dist ON true
    WHERE d.is_active`;
 
 export async function fetchDevices(): Promise<unknown[]> {

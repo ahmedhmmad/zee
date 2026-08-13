@@ -61,23 +61,62 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/devices', async () => fetchDevices());
 
+  /**
+   * Track points, either over a trailing window (`hours`) or between two
+   * explicit instants (`from`/`to`).
+   *
+   * An explicit range matters for investigating a specific journey: "what did
+   * this truck do between 14:00 and 16:00 last Tuesday" is the question asked
+   * after the fact, and a trailing window cannot express it.
+   */
   app.get('/api/devices/:id/track', async (req, reply) => {
     const id = deviceIdOf(req, reply);
     if (!id) return reply;
-    const hours = Math.min(Number((req.query as { hours?: string }).hours ?? 6), 72);
-    const { rows } = await pool.query(
-      `SELECT reported_at,
+
+    const q = req.query as { hours?: string; from?: string; to?: string };
+    const from = q.from ? new Date(q.from) : null;
+    const to = q.to ? new Date(q.to) : null;
+
+    if ((q.from && Number.isNaN(from!.getTime())) || (q.to && Number.isNaN(to!.getTime()))) {
+      return reply.code(400).send({ error: 'invalid_range' });
+    }
+    if (from && to && from >= to) {
+      return reply.code(400).send({ error: 'range_inverted' });
+    }
+
+    const select = `SELECT reported_at,
               ST_Y(location::geometry) AS latitude,
               ST_X(location::geometry) AS longitude,
               speed_kph, motor_locked
          FROM positions
-        WHERE device_id = $1
-          AND positioned
-          AND reported_at > now() - ($2 || ' hours')::interval
-        ORDER BY reported_at ASC
-        LIMIT 5000`,
-      [id, hours],
-    );
+        WHERE device_id = $1 AND positioned`;
+
+    // 5000 points is roughly 3.5 days at one per minute. Ordering by time
+    // DESC under the limit then re-sorting keeps the MOST RECENT points when a
+    // long range overflows, rather than silently truncating the recent end.
+    const { rows } = from || to
+      ? await pool.query(
+          `WITH capped AS (
+             ${select}
+               AND ($2::timestamptz IS NULL OR reported_at >= $2)
+               AND ($3::timestamptz IS NULL OR reported_at <= $3)
+             ORDER BY reported_at DESC
+             LIMIT 5000
+           )
+           SELECT * FROM capped ORDER BY reported_at ASC`,
+          [id, from, to],
+        )
+      : await pool.query(
+          `WITH capped AS (
+             ${select}
+               AND reported_at > now() - ($2 || ' hours')::interval
+             ORDER BY reported_at DESC
+             LIMIT 5000
+           )
+           SELECT * FROM capped ORDER BY reported_at ASC`,
+          [id, Math.min(Math.max(Number(q.hours ?? 6), 1), 24 * 30)],
+        );
+
     return rows;
   });
 
@@ -335,6 +374,24 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
    * this works at all — and it is how both existing devices' passwords were
    * recovered rather than guessed.
    */
+  /**
+   * Results of password reads, for the devices admin page.
+   *
+   * Kept off the general device list on purpose: that projection is broadcast
+   * to every open console over the WebSocket, and an unlock password has no
+   * business travelling with it. This is fetched only by the page that asked.
+   */
+  app.get('/api/password-reads', async () => {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT ON (device_id)
+              device_id, status, response, requested_at, confirmed_at
+         FROM commands
+        WHERE command_type = 'query_password'
+        ORDER BY device_id, requested_at DESC`,
+    );
+    return rows;
+  });
+
   app.post('/api/devices/:id/read-password', async (req, reply) => {
     const id = deviceIdOf(req, reply);
     if (!id) return reply;

@@ -2,6 +2,10 @@
 
 const $ = (id) => document.getElementById(id);
 
+// Declared here rather than beside the history page: applyTheme() touches it,
+// and a `let` further down would be in the temporal dead zone.
+let historyMap = null;
+
 const state = {
   devices: [],
   locations: [],
@@ -208,18 +212,38 @@ $('logout').addEventListener('click', async () => {
 const THEME_KEY = 'zee.mapTheme';
 const mapTheme = () => localStorage.getItem(THEME_KEY) ?? 'dark';
 
+/**
+ * One switch for the whole console, map included.
+ *
+ * It used to restyle only the map, which left a light basemap glaring out of a
+ * dark interface. Two separate dark/light buttons would be worse - so the
+ * theme is a single choice, applied to the document and handed to the map.
+ */
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  state.map?.setTheme(theme);
+  historyMap?.setTheme(theme);
+  renderThemeButton();
+}
+
 function renderThemeButton() {
   const btn = $('map-theme');
-  btn.hidden = !state.map?.supportsTheme;
+  // Always available: it themes the interface even when the basemap cannot be
+  // restyled (raster tiles have their colours baked into the images).
+  btn.hidden = false;
   btn.textContent = mapTheme() === 'dark' ? '🌙 داكن' : '☀️ فاتح';
+  btn.title = 'تبديل مظهر المنظومة والخريطة بين الداكن والفاتح';
 }
 
 $('map-theme').addEventListener('click', () => {
   const next = mapTheme() === 'dark' ? 'light' : 'dark';
   localStorage.setItem(THEME_KEY, next);
-  state.map?.setTheme(next);
-  renderThemeButton();
+  applyTheme(next);
 });
+
+// Applied before the map exists, so the interface never flashes the wrong
+// palette while Google's library downloads.
+document.documentElement.dataset.theme = mapTheme();
 
 async function initMap() {
   if (state.map) return;
@@ -507,6 +531,11 @@ async function renderDetail() {
   $('d-heading').textContent = headingLabel(d);
   $('d-sats').textContent = d.satellites ?? '—';
   $('d-rope').textContent = d.rope_inserted == null ? '—' : d.rope_inserted ? 'مُدخَل' : 'مسحوب';
+  // The odometer is a lifetime counter, useful for servicing but useless for
+  // "what did this truck do today" — so the per-period figures lead.
+  const km = (v) => (v == null ? '—' : `${Math.round(Number(v))} كم`);
+  $('d-dist-today').textContent = km(d.today_km);
+  $('d-dist-week').textContent = km(d.week_km);
   $('d-mileage').textContent = d.mileage_km != null ? `${d.mileage_km} كم` : '—';
   $('d-carrier').textContent = carrierLabel(d);
   // Lock events arrive 2-5 minutes late, cached in device flash, so this can
@@ -863,6 +892,82 @@ const SETTING_LABELS = {
   query_drift: 'تثبيت الموقع',
   query_gnss_power: 'توفير طاقة GPS',
   query_autolock: 'الإقفال التلقائي',
+  query_channels: 'قنوات الفتح المسموحة',
+  query_cards: 'بطاقات RFID المصرّح بها',
+  query_firmware: 'إصدار البرنامج',
+  query_bound_peripherals: 'الأقفال الفرعية المرتبطة',
+  query_password: 'كلمة مرور الفتح',
+};
+
+/**
+ * Turn a raw device response into a sentence.
+ *
+ * The device answers in bare comma-separated values - "30,30", "63,15",
+ * "1,1,1,1,1" - which mean nothing to an operator, and which even I have to
+ * look up in the protocol manual each time. Each decoder below is the manual's
+ * definition, written once, in the language the person reading it speaks.
+ */
+const SETTING_DECODERS = {
+  // P04: awake reporting interval (seconds), RTC wake interval (minutes)
+  query_intervals: (v) => {
+    const [awake, sleep] = v.split(',').map(Number);
+    if (!Number.isFinite(awake)) return null;
+    return `يُرسل موقعه كل ${awake} ثانية أثناء العمل، ويستيقظ كل ${sleep} دقيقة أثناء النوم`;
+  },
+  // P54: 1 = continuous tracking, 0 = sleep normally
+  query_tracking: (v) =>
+    v.split(',').pop() === '1'
+      ? 'تتبع مستمر — لا ينام الجهاز (استهلاك بطارية مرتفع)'
+      : 'الوضع العادي — ينام الجهاز بين التقارير',
+  // P37: motion threshold in mg; second value is a customised-firmware field
+  query_motion: (v) => {
+    const mg = Number(v.split(',')[0]);
+    if (!Number.isFinite(mg)) return null;
+    if (mg === 0) return 'كشف الحركة مُعطّل — لن يستيقظ الجهاز بالاهتزاز';
+    const how = mg <= 100 ? 'عالية جداً' : mg <= 200 ? 'عالية' : mg <= 1000 ? 'متوسطة' : 'منخفضة';
+    return `حساسية ${how} (${mg} مِلّي جي) — كلما قلّ الرقم استيقظ الجهاز باهتزاز أخف`;
+  },
+  // P59: sms, gprs, rfid, serial, bluetooth
+  query_channels: (v) => {
+    const names = ['رسائل SMS', 'المنظومة (شبكة البيانات)', 'بطاقة RFID', 'المنفذ السلكي', 'البلوتوث'];
+    const flags = v.split(',').map((x) => x === '1');
+    if (flags.length < 5) return null;
+    const on = names.filter((_, i) => flags[i]);
+    const off = names.filter((_, i) => !flags[i]);
+    return `مسموح: ${on.join('، ') || 'لا شيء'}${off.length ? ` · ممنوع: ${off.join('، ')}` : ''}`;
+  },
+  // P83: auto-lock delay in minutes
+  query_autolock: (v) => {
+    const m = Number(v.split(',').pop());
+    return Number.isFinite(m) ? `يُقفل تلقائياً بعد ${m} دقيقة إن لم يُسحب الحبل` : null;
+  },
+  // P63 / P97: simple on-off switches
+  query_drift: (v) =>
+    v.split(',').pop() === '1'
+      ? 'مفعّل — لا يتغيّر الموقع المعروض إلا عند تحرّك المركبة فعلياً'
+      : 'مُعطّل — قد يتذبذب الموقع قليلاً أثناء التوقف',
+  query_gnss_power: (v) =>
+    v.split(',').pop() === '1'
+      ? 'مفعّل — يُطفئ الـ GPS بين التقارير لتوفير البطارية'
+      : 'مُعطّل — يبقى الـ GPS يعمل باستمرار',
+  // P99: enabled, sampling seconds, turn angle
+  query_cornering: (v) => {
+    const [on, secs, angle] = v.split(',');
+    return on === '1'
+      ? `مفعّل — يُرسل نقطة إضافية عند انعطاف يتجاوز ${angle}° (كل ${secs} ثانية)`
+      : 'مُعطّل — المسار على الخريطة أقل نعومة عند المنعطفات';
+  },
+  // P41 response: group, count, then the card numbers
+  query_cards: (v) => {
+    const parts = v.split(',');
+    const cards = parts.slice(2).filter(Boolean);
+    return cards.length ? `${cards.length} بطاقة: ${cards.join('، ')}` : 'لا توجد بطاقات مسجّلة';
+  },
+  query_bound_peripherals: (v) => {
+    const ids = v.split(',').slice(1).filter(Boolean);
+    return ids.length ? `${ids.length} قفل فرعي: ${ids.join('، ')}` : 'لا توجد أقفال فرعية مرتبطة';
+  },
+  query_firmware: (v) => v.split(',')[0] ?? v,
 };
 
 $('open-tracking').addEventListener('click', () => {
@@ -900,13 +1005,27 @@ async function loadCurrentSettings() {
     }
     list.innerHTML = answered
       .map(
-        (r) => `<li>
+        (r) => {
+          // Fall back to the raw value if a decoder is missing or the device
+          // answered something unexpected — never hide what it actually said.
+          let plain = null;
+          try {
+            plain = SETTING_DECODERS[r.command_type]?.(r.response) ?? null;
+          } catch {
+            plain = null;
+          }
+          return `<li>
           <div class="row">
             <strong>${SETTING_LABELS[r.command_type] ?? r.command_type}</strong>
-            <span class="ltr-inline muted">${escapeHtml(r.response)}</span>
+            ${plain ? '' : `<span class="ltr-inline muted">${escapeHtml(r.response)}</span>`}
           </div>
-          <div class="when">${fmtDateTime(r.confirmed_at ?? r.sent_at)}</div>
-        </li>`,
+          ${plain ? `<div>${escapeHtml(plain)}</div>` : ''}
+          <div class="when">
+            ${fmtDateTime(r.confirmed_at ?? r.sent_at)}
+            ${plain ? `· <span class="ltr-inline">${escapeHtml(r.response)}</span>` : ''}
+          </div>
+        </li>`;
+        },
       )
       .join('');
   } catch {
@@ -1154,11 +1273,27 @@ $('arrival-form').addEventListener('submit', async (e) => {
 
 // --- Devices administration -------------------------------------------------
 
+/** Latest password-read result per device, keyed by id. */
+function passwordReadNote(read) {
+  if (!read) return '';
+  if (read.status === 'confirmed' && read.response) {
+    return `<span class="pill pill-ok">كلمة المرور: <span class="ltr-inline">${escapeHtml(read.response)}</span></span>
+            <span class="muted">قُرئت ${fmtDateTime(read.confirmed_at)}</span>`;
+  }
+  if (read.status === 'failed' || read.status === 'expired') {
+    return `<span class="pill pill-warn">تعذّرت قراءة كلمة المرور</span>`;
+  }
+  // queued or sent: the device has not answered yet.
+  return `<span class="pill pill-muted">بانتظار رد الجهاز على طلب كلمة المرور…</span>`;
+}
+
 async function loadDevicesPage() {
-  const [devices, unknown] = await Promise.all([
+  const [devices, unknown, reads] = await Promise.all([
     api('/api/devices').catch(() => []),
     api('/api/unknown-devices').catch(() => []),
+    api('/api/password-reads').catch(() => []),
   ]);
+  const readsById = new Map(reads.map((r) => [r.device_id, r]));
 
   // Locks that reached the gateway but are not registered. Approving one from
   // here means the id never has to be read off a label and retyped.
@@ -1197,6 +1332,11 @@ async function loadDevicesPage() {
               ${d.model ?? '—'}${d.firmware_version ? ` · <span class="ltr-inline">${escapeHtml(d.firmware_version.split('_').slice(0, 2).join('_'))}</span>` : ''}
               ${weak ? ' · <span class="pill pill-warn">كلمة مرور افتراضية</span>' : ''}
             </div>
+            ${
+              readsById.has(d.device_id)
+                ? `<div class="dev-pw">${passwordReadNote(readsById.get(d.device_id))}</div>`
+                : ''
+            }
           </li>`;
         })
         .join('')
@@ -1217,7 +1357,10 @@ async function loadDevicesPage() {
   for (const btn of $('devices-list').querySelectorAll('[data-readpw]')) {
     btn.addEventListener('click', async () => {
       await api(`/api/devices/${btn.dataset.readpw}/read-password`, { method: 'POST' });
-      toast('تم إرسال طلب قراءة كلمة المرور — تظهر النتيجة في سجل الأوامر', 'ok');
+      toast('تم إرسال طلب القراءة — ستظهر كلمة المرور هنا عند رد الجهاز', 'ok');
+      // Show the pending state straight away, then let the poller replace it
+      // with the answer rather than sending the operator to another screen.
+      loadDevicesPage();
     });
   }
   for (const btn of $('devices-list').querySelectorAll('[data-setpw]')) {
@@ -1230,11 +1373,24 @@ async function loadDevicesPage() {
   }
 }
 
+/**
+ * A password read only completes when the device next wakes, which can be
+ * half an hour. Poll while the page is open so the answer lands where it was
+ * asked for, instead of the operator having to go and look for it later.
+ */
+let devicesPoll = null;
+
 $('open-devices').addEventListener('click', () => {
   $('devices-page').hidden = false;
   loadDevicesPage();
+  clearInterval(devicesPoll);
+  devicesPoll = setInterval(() => loadDevicesPage().catch(() => {}), 15000);
 });
-$('close-devices').addEventListener('click', () => ($('devices-page').hidden = true));
+$('close-devices').addEventListener('click', () => {
+  $('devices-page').hidden = true;
+  clearInterval(devicesPoll);
+  devicesPoll = null;
+});
 
 $('device-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1295,12 +1451,16 @@ $('password-form').addEventListener('submit', async (e) => {
 async function loadLocations() {
   state.locations = await api('/api/locations').catch(() => []);
 
+  // Keep the operator's choice across a reload of the list, so adding a
+  // location from the other page does not silently reset the selection.
   const select = $('arrival-location');
+  const previous = select.value;
   select.innerHTML = state.locations.length
     ? state.locations
         .map((l) => `<option value="${l.id}">${escapeHtml(l.name)} — ${LOCATION_KINDS[l.kind] ?? l.kind}</option>`)
         .join('')
     : '<option value="">لا توجد مواقع — أضفها من صفحة المواقع</option>';
+  if (previous && state.locations.some((l) => String(l.id) === previous)) select.value = previous;
 
   const list = $('locations-list');
   if (!state.locations.length) {
@@ -1373,7 +1533,6 @@ $('location-form').addEventListener('submit', async (e) => {
 
 // --- Trip history page ------------------------------------------------------
 
-let historyMap = null;
 
 async function openHistory() {
   $('history-page').hidden = false;
@@ -1394,14 +1553,44 @@ async function openHistory() {
   loadHistory();
 }
 
+/** Trailing window, or an explicit from/to when "فترة محددة" is chosen. */
+function historyRange() {
+  const raw = $('hist-range').value;
+  if (raw !== 'custom') return { query: `hours=${Number(raw)}`, label: rangeLabel(Number(raw)) };
+
+  // datetime-local gives a wall-clock string with no zone; the browser reads
+  // it in the operator's own zone, which is what they meant by typing it.
+  const from = $('hist-from').value ? new Date($('hist-from').value) : null;
+  const to = $('hist-to').value ? new Date($('hist-to').value) : null;
+  if (!from && !to) return { query: 'hours=12', label: rangeLabel(12) };
+
+  const params = new URLSearchParams();
+  if (from) params.set('from', from.toISOString());
+  if (to) params.set('to', to.toISOString());
+  return {
+    query: params.toString(),
+    label: `${from ? fmtDateTime(from.toISOString()) : '…'} — ${to ? fmtDateTime(to.toISOString()) : 'الآن'}`,
+  };
+}
+
+function rangeLabel(hours) {
+  if (hours < 24) return `آخر ${hours} ساعة`;
+  if (hours % 24 === 0) return `آخر ${hours / 24} يوم`;
+  return `آخر ${hours} ساعة`;
+}
+
+$('hist-range').addEventListener('change', () => {
+  $('hist-custom').hidden = $('hist-range').value !== 'custom';
+});
+
 async function loadHistory() {
   if (!historyMap) return;
   const deviceId = $('hist-device').value;
-  const hours = Number($('hist-range').value);
   const mode = $('hist-mode').value;
   if (!deviceId) return;
 
-  const points = await api(`/api/devices/${deviceId}/track?hours=${hours}`).catch(() => []);
+  const range = historyRange();
+  const points = await api(`/api/devices/${deviceId}/track?${range.query}`).catch(() => []);
 
   // "Towards a destination" has a precise meaning here: the window between an
   // arrival rule being armed and it firing (or expiring). Movement inside
@@ -1412,7 +1601,7 @@ async function loadHistory() {
   if (mode === 'all') {
     const path = dropStationaryDrift(points.map((p) => [p.latitude, p.longitude]));
     segments = path.length > 1 ? [path] : [];
-    summary = path.length ? `كل التحركات — ${points.length} نقطة خلال ${hours} ساعة` : '';
+    summary = path.length ? `كل التحركات — ${points.length} نقطة · ${range.label}` : '';
   } else {
     const arrivals = await api(`/api/devices/${deviceId}/arrivals`).catch(() => []);
     const windows = arrivals.map((a) => [
@@ -1432,7 +1621,7 @@ async function loadHistory() {
       )
       .filter((seg) => seg.length > 1);
     summary = segments.length
-      ? `${segments.length} رحلة توصيل خلال ${hours} ساعة`
+      ? `${segments.length} رحلة توصيل · ${range.label}`
       : 'لا توجد رحلات توصيل في هذه الفترة — اختر «كل التحركات» لعرض المسار كاملاً';
   }
 
@@ -1475,6 +1664,7 @@ $('close-history').addEventListener('click', () => ($('history-page').hidden = t
 $('hist-device').addEventListener('change', loadHistory);
 $('hist-range').addEventListener('change', loadHistory);
 $('hist-mode').addEventListener('change', loadHistory);
+for (const id of ['hist-from', 'hist-to']) $(id).addEventListener('change', loadHistory);
 
 let toastTimer;
 function toast(message, kind) {
@@ -1624,6 +1814,10 @@ async function start() {
     return;
   }
   connectWebSocket();
+  // The arrival form's location dropdown is filled from this. Loading it only
+  // when the locations page opened meant the dropdown sat empty until you
+  // happened to visit that page.
+  loadLocations().catch(() => {});
   // Timestamps are relative ("2 minutes ago"), so re-render even when idle.
   setInterval(renderDeviceList, 30000);
 }

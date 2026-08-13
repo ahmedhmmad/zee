@@ -14,11 +14,37 @@
   --accent: #2f9e6e;
   --danger: #d9483b;
   --warn: #d9922b;
+  --selected: #1d2c26;
   --radius: 10px;
   /* Cairo is a progressive enhancement. The fallbacks all ship with Arabic
      coverage on their platforms, so the UI is legible if it never loads. */
   --font: 'Cairo', 'Segoe UI', Tahoma, 'Noto Sans Arabic', 'Geeza Pro', system-ui, sans-serif;
 }
+
+/*
+ * Light theme. Dispatchers in a control room want the dark one; anyone
+ * checking a truck on a phone in Libyan daylight wants this.
+ *
+ * Only the tokens change - every rule below is written against them, so the
+ * two themes cannot drift apart.
+ */
+:root[data-theme='light'] {
+  --bg: #eef2f5;
+  --surface: #ffffff;
+  --surface-2: #f4f7f9;
+  --border: #cfdae1;
+  --text: #14212a;
+  --muted: #566c7a;
+  --accent: #1f7a52;
+  --danger: #c23b2e;
+  --warn: #a76d16;
+  --selected: #e3f2ea;
+}
+
+/* Alarm and status tints are alpha over the surface, so they work in both. */
+:root[data-theme='light'] .pill-ok { color: #14603f; }
+:root[data-theme='light'] .pill-danger { color: #9b2f24; }
+:root[data-theme='light'] .pill-warn { color: #8a5a10; }
 
 * { box-sizing: border-box; }
 
@@ -173,7 +199,7 @@ label { font-size: .85rem; color: var(--muted); }
   cursor: pointer;
 }
 .device-item:hover { border-color: var(--accent); }
-.device-item.selected { border-color: var(--accent); background: #1d2c26; }
+.device-item.selected { border-color: var(--accent); background: var(--selected); }
 .device-item.is-unlocked { border-inline-start-color: var(--danger); }
 .device-item.is-locked { border-inline-start-color: var(--accent); }
 .device-item.is-offline { border-inline-start-color: var(--border); opacity: .65; }
@@ -252,13 +278,20 @@ label { font-size: .85rem; color: var(--muted); }
 
 /* --- Modal and toast ---------------------------------------------------- */
 
+/*
+ * Stacking order, deliberately: pages (45) sit over the console, modals (60)
+ * over pages, toasts (70) over everything.
+ *
+ * Modals used to be 40 - BELOW pages - so "change password" opened behind the
+ * devices page and only became visible once that page was closed.
+ */
 .modal {
   position: fixed;
   inset: 0;
   background: rgba(0,0,0,.65);
   display: grid;
   place-items: center;
-  z-index: 40;
+  z-index: 60;
   padding: 1rem;
 }
 .modal-card {
@@ -288,7 +321,7 @@ label { font-size: .85rem; color: var(--muted); }
   border-radius: var(--radius);
   padding: .7rem 1.2rem;
   font-size: .88rem;
-  z-index: 50;
+  z-index: 70;
 }
 .toast.ok { border-color: var(--accent); }
 .toast.bad { border-color: var(--danger); }
@@ -492,3 +525,21 @@ select {
  */
 .truck-marker.aging { opacity: .6; }
 .truck-marker.stale { opacity: .35; }
+
+/* Custom history window: only shown when "فترة محددة" is selected. */
+.hist-custom { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; }
+.hist-custom input[type=datetime-local] {
+  inline-size: 100%;
+  padding: .5rem .7rem;
+  margin-block-start: .35rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: .85rem;
+  color-scheme: dark light;
+}
+
+/* Password read result, shown where the read was requested. */
+.dev-pw { margin-block-start: .4rem; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
