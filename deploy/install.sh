@@ -84,10 +84,14 @@ fi
 # console. A port we are listening on that also has an established peer IS the
 # way somebody is currently reaching this machine — no name required.
 session_ports() {
-  local listening established
-  listening=$(ss -Hltn 2>/dev/null | awk '{print $4}' | sed 's/.*://' | sort -un)
-  established=$(ss -Htn state established 2>/dev/null | awk '{print $3}' | sed 's/.*://' | sort -un)
-  comm -12 <(printf '%s\n' "$listening") <(printf '%s\n' "$established")
+  # Listening ports first, then the local port of every established
+  # connection; anything appearing in both is a service somebody is connected
+  # to. Done in one awk pass so nothing depends on sort order.
+  {
+    ss -Hltn 2>/dev/null              | awk '{ sub(/.*:/, "", $4); print "L", $4 }'
+    ss -Htn state established 2>/dev/null | awk '{ sub(/.*:/, "", $3); print "E", $3 }'
+  } | awk '$1 == "L" { listening[$2] = 1 }
+           $1 == "E" && listening[$2] && !seen[$2]++ { print $2 }'
 }
 
 SESSION_PORTS=$(session_ports)
