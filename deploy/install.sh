@@ -1,0 +1,368 @@
+#!/usr/bin/env bash
+#
+# Zee lock platform — one-shot deployment to a fresh Ubuntu server.
+#
+# Usage, on the NEW server only:
+#
+#   curl -fsSL https://raw.githubusercontent.com/ahmedhmmad/zee/main/deploy/install.sh -o install.sh
+#   sudo bash install.sh
+#
+# Options:
+#   --skip-firewall   deploy the application but leave ufw alone
+#   --skip-tls        deploy without requesting a certificate (DNS not ready yet)
+#
+# Safe to re-run: every stage checks whether its work is already done.
+# Secrets are read silently and never printed.
+
+set -euo pipefail
+
+# Prompts must come from the terminal even if the script itself was piped in.
+exec 3</dev/tty || exec 3</dev/stdin
+
+SKIP_FIREWALL=0
+SKIP_TLS=0
+for arg in "$@"; do
+  case "$arg" in
+    --skip-firewall) SKIP_FIREWALL=1 ;;
+    --skip-tls)      SKIP_TLS=1 ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+
+APP_DIR=/home/zee/app
+REPO=https://github.com/ahmedhmmad/zee.git
+GATEWAY_PORT=10001
+API_PORT=3333
+
+# --- helpers ----------------------------------------------------------------
+
+bold()  { printf '\n\033[1m%s\033[0m\n' "$1"; }
+info()  { printf '  %s\n' "$1"; }
+ok()    { printf '  \033[32m✓\033[0m %s\n' "$1"; }
+warn()  { printf '  \033[33m!\033[0m %s\n' "$1"; }
+die()   { printf '\n\033[31m✗ %s\033[0m\n' "$1" >&2; exit 1; }
+
+ask() {  # ask <varname> <prompt> [default]
+  local __var=$1 __prompt=$2 __default=${3:-} __reply
+  if [ -n "$__default" ]; then
+    printf '  %s [%s]: ' "$__prompt" "$__default"
+  else
+    printf '  %s: ' "$__prompt"
+  fi
+  read -r __reply <&3
+  printf -v "$__var" '%s' "${__reply:-$__default}"
+}
+
+ask_secret() {  # ask_secret <varname> <prompt> — silent, asks twice
+  local __var=$1 __prompt=$2 __a __b
+  while :; do
+    printf '  %s: ' "$__prompt";        read -rs __a <&3; echo
+    printf '  %s (again): ' "$__prompt"; read -rs __b <&3; echo
+    [ -z "$__a" ] && { warn "cannot be empty"; continue; }
+    [ "$__a" = "$__b" ] || { warn "they do not match, try again"; continue; }
+    printf -v "$__var" '%s' "$__a"; return
+  done
+}
+
+trap 'die "failed on line $LINENO. Nothing further was changed; fix the cause and re-run."' ERR
+
+# --- preflight --------------------------------------------------------------
+
+bold "Preflight"
+
+[ "$(id -u)" -eq 0 ] || die "run with sudo: sudo bash install.sh"
+grep -qi ubuntu /etc/os-release || die "this script targets Ubuntu"
+ok "Ubuntu $(. /etc/os-release && echo "$VERSION_ID"), $(uname -m)"
+
+# The old server must keep running as the rollback, so refuse to run there.
+if [ -d /home/zee/htdocs ]; then
+  die "this looks like the OLD server (found /home/zee/htdocs). Run on the NEW one."
+fi
+
+# AnyDesk is the operator's only way in. Report what we found; never touch it.
+if systemctl list-unit-files 2>/dev/null | grep -q '^anydesk'; then
+  ANYDESK_BOOT=$(systemctl is-enabled anydesk 2>/dev/null || echo unknown)
+  ok "AnyDesk present, start-at-boot: $ANYDESK_BOOT"
+  [ "$ANYDESK_BOOT" = enabled ] || warn "AnyDesk is NOT enabled at boot — it will not return after a reboot"
+  if ss -lntp 2>/dev/null | grep -q ':7070 '; then
+    ANYDESK_DIRECT=1
+    warn "AnyDesk is listening on 7070 — a direct connection, so the firewall will allow that port"
+  else
+    ANYDESK_DIRECT=0
+    ok "AnyDesk uses an outbound connection — inbound rules cannot disconnect you"
+  fi
+else
+  ANYDESK_DIRECT=0
+  warn "no AnyDesk service found — if you rely on it, stop and check before the firewall stage"
+fi
+
+if ufw status 2>/dev/null | grep -q '^Status: active'; then
+  warn "a firewall is ALREADY active:"
+  ufw status | sed 's/^/      /'
+  warn "the firewall stage will add rules to it rather than replace it"
+fi
+
+# --- gather inputs ----------------------------------------------------------
+
+bold "Configuration"
+info "Passwords are hidden as you type. The database password and session"
+info "secret are generated automatically and never displayed."
+echo
+
+ask DOMAIN     "Console hostname"            "locks.ahmedhammad.page"
+ask EMAIL      "Email for certificate notices" "eng.ahammad7@gmail.com"
+ask_secret AUTH_PASSWORD "Console login password (you will use this to sign in)"
+ask GMAPS_KEY  "Google Maps API key (blank to use OpenStreetMap)" ""
+ask DUMP_FILE  "Path to database dump from the old server (blank for empty DB)" ""
+
+if [ -n "$DUMP_FILE" ] && [ ! -r "$DUMP_FILE" ]; then
+  die "cannot read dump file: $DUMP_FILE"
+fi
+
+# Generated, not asked: nothing needs to know these but the application.
+DB_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)
+COOKIE_SECRET=$(openssl rand -hex 32)
+
+bold "About to install"
+info "Console      https://$DOMAIN"
+info "Gateway      port $GATEWAY_PORT, public"
+info "Application  $APP_DIR, running as user 'zee'"
+info "Database     local PostgreSQL + PostGIS, loopback only"
+info "Restore      ${DUMP_FILE:-none — starting with an empty database}"
+info "Maps         ${GMAPS_KEY:+Google}${GMAPS_KEY:-OpenStreetMap}"
+info "TLS          $([ $SKIP_TLS -eq 1 ] && echo 'skipped' || echo 'certbot, needs DNS pointing here')"
+info "Firewall     $([ $SKIP_FIREWALL -eq 1 ] && echo 'skipped' || echo 'asked for confirmation at the end')"
+echo
+ask CONFIRM "Continue? (yes/no)" "no"
+[ "$CONFIRM" = yes ] || die "aborted, nothing changed"
+
+# --- 1. packages ------------------------------------------------------------
+
+bold "1/6  Installing packages"
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+
+if ! command -v node >/dev/null || [ "$(node -v | cut -c2- | cut -d. -f1)" -lt 22 ]; then
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
+  apt-get install -y -qq nodejs
+fi
+ok "Node $(node -v)"
+
+apt-get install -y -qq postgresql postgresql-contrib nginx certbot python3-certbot-nginx git at curl
+PG_VER=$(psql --version | grep -oP '\d+' | head -1)
+apt-get install -y -qq postgis "postgresql-${PG_VER}-postgis-3"
+ok "PostgreSQL $PG_VER with PostGIS, nginx, certbot"
+
+# --- 2. database ------------------------------------------------------------
+
+bold "2/6  Database"
+
+if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='zee_app'" | grep -q 1; then
+  sudo -u postgres psql -qc "ALTER USER zee_app WITH PASSWORD '$DB_PASSWORD';"
+  ok "role zee_app existed — password rotated"
+else
+  sudo -u postgres psql -qc "CREATE USER zee_app WITH PASSWORD '$DB_PASSWORD';"
+  ok "role zee_app created"
+fi
+
+if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='zee'" | grep -q 1; then
+  sudo -u postgres createdb -O zee_app zee
+  ok "database zee created"
+fi
+sudo -u postgres psql -qd zee -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+
+if [ -n "$DUMP_FILE" ]; then
+  # pg_restore reports ownership noise on a fresh cluster; that is expected.
+  sudo -u postgres pg_restore -d zee --no-owner --role=zee_app "$DUMP_FILE" 2>/dev/null || true
+  DEV_COUNT=$(sudo -u postgres psql -tAd zee -c "SELECT count(*) FROM devices" 2>/dev/null || echo 0)
+  ok "restored — $DEV_COUNT device(s) in the database"
+  warn "delete the dump when you have verified this: shred -u $DUMP_FILE"
+fi
+
+# Refuse to continue if Postgres is reachable from off-box.
+if ss -lntH 'sport = :5432' | grep -qv '127.0.0.1\|::1'; then
+  die "PostgreSQL is listening beyond loopback — fix listen_addresses before continuing"
+fi
+ok "PostgreSQL bound to loopback only"
+
+# --- 3. application ---------------------------------------------------------
+
+bold "3/6  Application"
+
+id zee >/dev/null 2>&1 || adduser --system --group --home /home/zee --shell /usr/sbin/nologin zee
+ok "service user 'zee' (unprivileged, no login shell)"
+
+if [ -d "$APP_DIR/.git" ]; then
+  runuser -u zee -- git -C "$APP_DIR" pull --ff-only
+  ok "repository updated"
+else
+  runuser -u zee -- git clone -q "$REPO" "$APP_DIR"
+  ok "repository cloned"
+fi
+
+cd "$APP_DIR"
+runuser -u zee -- npm install --omit=dev --silent
+ok "dependencies installed"
+
+# The decoder is tested against the vendor manual's own frames. If Node
+# behaves differently here, fail now rather than mis-decode a truck's position.
+if runuser -u zee -- npm test >/tmp/zee-test.log 2>&1; then
+  ok "protocol test suite passes"
+else
+  die "test suite failed — see /tmp/zee-test.log"
+fi
+
+# Note the deliberate absence of AUTH_DISABLED: with it set, the console and
+# the unlock endpoint are open to anyone who finds the URL.
+umask 077
+cat > "$APP_DIR/.env" <<EOF
+GATEWAY_PORT=$GATEWAY_PORT
+GATEWAY_HOST=0.0.0.0
+DATABASE_URL=postgres://zee_app:$DB_PASSWORD@127.0.0.1:5432/zee
+REQUIRE_KNOWN_DEVICE=true
+API_PORT=$API_PORT
+API_HOST=127.0.0.1
+AUTH_PASSWORD=$AUTH_PASSWORD
+COOKIE_SECRET=$COOKIE_SECRET
+LOG_LEVEL=info
+TILE_CACHE_DIR=$APP_DIR/.cache/tiles
+GOOGLE_MAPS_API_KEY=$GMAPS_KEY
+EOF
+umask 022
+chown zee:zee "$APP_DIR/.env"
+chmod 600 "$APP_DIR/.env"
+ok ".env written, owner zee, mode 600"
+
+runuser -u zee -- node --env-file-if-exists=.env scripts/migrate.ts >/dev/null
+ok "database migrations applied"
+
+# --- 4. services ------------------------------------------------------------
+
+bold "4/6  Services"
+
+for unit in zee-gateway zee-api; do
+  sed "s#/home/zee/htdocs/locks.ahmedhammad.page#$APP_DIR#g" \
+    "$APP_DIR/deploy/$unit.service" > "/etc/systemd/system/$unit.service"
+done
+systemctl daemon-reload
+systemctl enable --now zee-gateway zee-api >/dev/null 2>&1
+sleep 2
+
+systemctl is-active --quiet zee-gateway || die "zee-gateway did not start: journalctl -u zee-gateway -n 30"
+systemctl is-active --quiet zee-api     || die "zee-api did not start: journalctl -u zee-api -n 30"
+ok "zee-gateway and zee-api running, enabled at boot"
+
+ss -lntH "sport = :$API_PORT" | grep -q '127.0.0.1' \
+  || die "API is not bound to loopback — the console would be reachable over plain HTTP"
+ok "API on 127.0.0.1:$API_PORT, gateway on 0.0.0.0:$GATEWAY_PORT"
+
+# --- 5. nginx and TLS -------------------------------------------------------
+
+bold "5/6  Web server"
+
+cat > /etc/nginx/sites-available/zee <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "same-origin" always;
+
+    location / {
+        proxy_pass http://127.0.0.1:$API_PORT;
+        proxy_http_version 1.1;
+        # The live map runs over a WebSocket; these two headers carry the upgrade.
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 900;
+    }
+}
+EOF
+ln -sf /etc/nginx/sites-available/zee /etc/nginx/sites-enabled/zee
+rm -f /etc/nginx/sites-enabled/default
+nginx -t >/dev/null 2>&1 || die "nginx configuration is invalid"
+systemctl reload nginx
+ok "nginx proxying $DOMAIN to the application"
+
+if [ $SKIP_TLS -eq 1 ]; then
+  warn "TLS skipped — run later: certbot --nginx -d $DOMAIN --redirect -m $EMAIL --agree-tos"
+else
+  RESOLVED=$(getent hosts "$DOMAIN" | awk '{print $1}' | head -1 || true)
+  PUBLIC_IP=$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || echo "")
+  if [ -n "$RESOLVED" ] && [ -n "$PUBLIC_IP" ] && [ "$RESOLVED" != "$PUBLIC_IP" ]; then
+    warn "$DOMAIN resolves to $RESOLVED but this server is $PUBLIC_IP"
+    warn "skipping certificate — point DNS here, then run:"
+    warn "  certbot --nginx -d $DOMAIN --redirect -m $EMAIL --agree-tos"
+  elif certbot --nginx -d "$DOMAIN" --redirect --agree-tos -m "$EMAIL" -n >/dev/null 2>&1; then
+    ok "certificate issued, HTTPS redirect on, renewal timer installed"
+  else
+    warn "certbot failed — the site works over HTTP. Re-run manually:"
+    warn "  certbot --nginx -d $DOMAIN --redirect -m $EMAIL --agree-tos"
+  fi
+fi
+
+# --- 6. firewall ------------------------------------------------------------
+
+bold "6/6  Firewall"
+
+if [ $SKIP_FIREWALL -eq 1 ]; then
+  warn "skipped by request — the server is currently unfirewalled"
+else
+  info "Rules to be applied:"
+  info "    allow  443/tcp   console"
+  info "    allow   80/tcp   certificate renewal"
+  info "    allow $GATEWAY_PORT/tcp   device gateway"
+  [ "$ANYDESK_DIRECT" -eq 1 ] && info "    allow 7070/tcp   AnyDesk direct connection"
+  info "    deny   all other incoming"
+  info "    outgoing left UNRESTRICTED — this is what protects AnyDesk"
+  echo
+  info "A timer will switch the firewall off again in 10 minutes. If your"
+  info "session freezes, do nothing and wait — it recovers by itself."
+  echo
+  ask FWCONFIRM "Apply firewall now? (yes/no)" "no"
+
+  if [ "$FWCONFIRM" = yes ]; then
+    echo "ufw --force disable" | at now + 10 minutes 2>/dev/null
+    AT_JOB=$(atq | tail -1 | awk '{print $1}')
+    ok "recovery timer armed (job $AT_JOB)"
+
+    ufw --force default allow outgoing >/dev/null
+    ufw --force default deny incoming  >/dev/null
+    ufw allow 443/tcp                  >/dev/null
+    ufw allow 80/tcp                   >/dev/null
+    ufw allow "$GATEWAY_PORT/tcp"      >/dev/null
+    [ "$ANYDESK_DIRECT" -eq 1 ] && ufw allow 7070/tcp >/dev/null
+    ufw --force enable                 >/dev/null
+    ok "firewall active"
+    echo
+    warn "Use AnyDesk normally for two minutes. If it still works, make it permanent:"
+    warn "    sudo atrm $AT_JOB"
+    warn "If your session drops, wait 10 minutes and it will come back."
+  else
+    warn "firewall not applied — the server is currently unfirewalled"
+  fi
+fi
+
+# --- summary ----------------------------------------------------------------
+
+bold "Done"
+info "Console    https://$DOMAIN"
+info "Sign in with the password you entered."
+echo
+info "Check it:"
+info "    systemctl is-active zee-gateway zee-api nginx postgresql"
+info "    curl -s -o /dev/null -w '%{http_code}\\n' https://$DOMAIN/api/devices   # expect 401"
+info "    journalctl -u zee-gateway -n 20 --no-pager"
+echo
+info "Still to do:"
+info "  · Point the gw hostname at this server so devices move over"
+[ -n "$DUMP_FILE" ] && info "  · shred -u $DUMP_FILE"
+info "  · Restrict port $GATEWAY_PORT to the carrier ranges once you have them"
+info "  · Rotate the device unlock password and lock the unlock channels"
+echo
