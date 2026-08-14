@@ -119,6 +119,34 @@ if [ -n "$DUMP_FILE" ] && [ ! -r "$DUMP_FILE" ]; then
   die "cannot read dump file: $DUMP_FILE"
 fi
 
+# With no dump, the schema comes from the migrations and the database starts
+# empty — so the locks have to be registered here. The gateway rejects any
+# device that is not on this list, which is the only barrier against forged
+# telemetry in a protocol that has no authentication of its own.
+DEVICE_IDS=(); DEVICE_NAMES=(); DEVICE_PLATES=(); DEVICE_PASSWORDS=()
+if [ -z "$DUMP_FILE" ]; then
+  echo
+  info "Register your locks. The 10-digit device ID is printed on the label"
+  info "underneath each unit. Leave the ID blank when you have finished."
+  while :; do
+    echo
+    ask DEV_ID "Device ID (blank to finish)" ""
+    [ -z "$DEV_ID" ] && break
+    if ! printf '%s' "$DEV_ID" | grep -qE '^[0-9]{10}$'; then
+      warn "must be exactly 10 digits"; continue
+    fi
+    ask DEV_NAME  "  Vehicle name"            "شاحنة $(( ${#DEVICE_IDS[@]} + 1 ))"
+    ask DEV_PLATE "  Plate number (optional)" ""
+    ask DEV_PASS  "  Unlock password"         "123456"
+    DEVICE_IDS+=("$DEV_ID"); DEVICE_NAMES+=("$DEV_NAME")
+    DEVICE_PLATES+=("$DEV_PLATE"); DEVICE_PASSWORDS+=("$DEV_PASS")
+    ok "will register $DEV_ID"
+  done
+fi
+
+# Single quotes are the only thing that can break out of a literal here.
+sql_quote() { printf "%s" "${1//\'/\'\'}"; }
+
 # Generated, not asked: nothing needs to know these but the application.
 DB_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)
 COOKIE_SECRET=$(openssl rand -hex 32)
@@ -129,6 +157,7 @@ info "Gateway      port $GATEWAY_PORT, public"
 info "Application  $APP_DIR, running as user 'zee'"
 info "Database     local PostgreSQL + PostGIS, loopback only"
 info "Restore      ${DUMP_FILE:-none — starting with an empty database}"
+[ ${#DEVICE_IDS[@]} -gt 0 ] && info "Devices      ${#DEVICE_IDS[@]} to register: ${DEVICE_IDS[*]}"
 info "Maps         ${GMAPS_KEY:+Google}${GMAPS_KEY:-OpenStreetMap}"
 info "TLS          $([ $SKIP_TLS -eq 1 ] && echo 'skipped' || echo 'certbot, needs DNS pointing here')"
 info "Firewall     $([ $SKIP_FIREWALL -eq 1 ] && echo 'skipped' || echo 'asked for confirmation at the end')"
@@ -236,6 +265,24 @@ ok ".env written, owner zee, mode 600"
 
 runuser -u zee -- node --env-file-if-exists=.env scripts/migrate.ts >/dev/null
 ok "database migrations applied"
+
+# Registered after the migrations, because the devices table has to exist.
+# ON CONFLICT keeps the script safe to re-run.
+for i in "${!DEVICE_IDS[@]}"; do
+  sudo -u postgres psql -qd zee -c "
+    INSERT INTO devices (device_id, name, plate_number, model, static_password)
+    VALUES ('$(sql_quote "${DEVICE_IDS[$i]}")',
+            '$(sql_quote "${DEVICE_NAMES[$i]}")',
+            NULLIF('$(sql_quote "${DEVICE_PLATES[$i]}")', ''),
+            'JT701D',
+            '$(sql_quote "${DEVICE_PASSWORDS[$i]}")')
+    ON CONFLICT (device_id) DO NOTHING;"
+  ok "registered ${DEVICE_IDS[$i]} — ${DEVICE_NAMES[$i]}"
+done
+
+DEVICE_TOTAL=$(sudo -u postgres psql -tAd zee -c "SELECT count(*) FROM devices WHERE is_active" 2>/dev/null || echo 0)
+ok "$DEVICE_TOTAL device(s) on the allowlist"
+[ "$DEVICE_TOTAL" -eq 0 ] && warn "no devices registered — the gateway will refuse every connection"
 
 # --- 4. services ------------------------------------------------------------
 
