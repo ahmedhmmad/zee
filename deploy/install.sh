@@ -79,21 +79,23 @@ if [ -d /home/zee/htdocs ]; then
   die "this looks like the OLD server (found /home/zee/htdocs). Run on the NEW one."
 fi
 
-# AnyDesk is the operator's only way in. Report what we found; never touch it.
-if systemctl list-unit-files 2>/dev/null | grep -q '^anydesk'; then
-  ANYDESK_BOOT=$(systemctl is-enabled anydesk 2>/dev/null || echo unknown)
-  ok "AnyDesk present, start-at-boot: $ANYDESK_BOOT"
-  [ "$ANYDESK_BOOT" = enabled ] || warn "AnyDesk is NOT enabled at boot — it will not return after a reboot"
-  if ss -lntp 2>/dev/null | grep -q ':7070 '; then
-    ANYDESK_DIRECT=1
-    warn "AnyDesk is listening on 7070 — a direct connection, so the firewall will allow that port"
-  else
-    ANYDESK_DIRECT=0
-    ok "AnyDesk uses an outbound connection — inbound rules cannot disconnect you"
-  fi
+# Whatever the operator is connected with must survive the firewall, and the
+# script has no business guessing whether that is SSH, AnyDesk, RDP or a
+# console. A port we are listening on that also has an established peer IS the
+# way somebody is currently reaching this machine — no name required.
+session_ports() {
+  local listening established
+  listening=$(ss -Hltn 2>/dev/null | awk '{print $4}' | sed 's/.*://' | sort -un)
+  established=$(ss -Htn state established 2>/dev/null | awk '{print $3}' | sed 's/.*://' | sort -un)
+  comm -12 <(printf '%s\n' "$listening") <(printf '%s\n' "$established")
+}
+
+SESSION_PORTS=$(session_ports)
+if [ -n "$SESSION_PORTS" ]; then
+  ok "you are connected on port(s) $(echo $SESSION_PORTS) — these stay open"
 else
-  ANYDESK_DIRECT=0
-  warn "no AnyDesk service found — if you rely on it, stop and check before the firewall stage"
+  warn "could not detect how you are connected; the firewall will still allow"
+  warn "any port with a live session when it is applied"
 fi
 
 if ufw status 2>/dev/null | grep -q '^Status: active'; then
@@ -365,32 +367,39 @@ else
   info "    allow  443/tcp   console"
   info "    allow   80/tcp   certificate renewal"
   info "    allow $GATEWAY_PORT/tcp   device gateway"
-  [ "$ANYDESK_DIRECT" -eq 1 ] && info "    allow 7070/tcp   AnyDesk direct connection"
+  for p in $(session_ports); do info "    allow $(printf '%5s' "$p")/tcp   your current session"; done
   info "    deny   all other incoming"
-  info "    outgoing left UNRESTRICTED — this is what protects AnyDesk"
+  info "    outgoing left UNRESTRICTED — never touched"
   echo
-  info "A timer will switch the firewall off again in 10 minutes. If your"
-  info "session freezes, do nothing and wait — it recovers by itself."
+  info "If applying this cuts your connection, do nothing: the firewall"
+  info "switches itself off again after 10 minutes and you get back in."
   echo
   ask FWCONFIRM "Apply firewall now? (yes/no)" "no"
 
   if [ "$FWCONFIRM" = yes ]; then
     echo "ufw --force disable" | at now + 10 minutes 2>/dev/null
-    AT_JOB=$(atq | tail -1 | awk '{print $1}')
-    ok "recovery timer armed (job $AT_JOB)"
+    AT_JOB=$(atq | sort -n | tail -1 | awk '{print $1}')
 
     ufw --force default allow outgoing >/dev/null
     ufw --force default deny incoming  >/dev/null
     ufw allow 443/tcp                  >/dev/null
     ufw allow 80/tcp                   >/dev/null
     ufw allow "$GATEWAY_PORT/tcp"      >/dev/null
-    [ "$ANYDESK_DIRECT" -eq 1 ] && ufw allow 7070/tcp >/dev/null
+    # Added before enabling, never after: the rule has to exist first.
+    for p in $(session_ports); do ufw allow "$p/tcp" >/dev/null; done
     ufw --force enable                 >/dev/null
     ok "firewall active"
+
+    # Answering proves the connection survived, so the rollback can be
+    # cancelled here rather than left as a chore to remember.
     echo
-    warn "Use AnyDesk normally for two minutes. If it still works, make it permanent:"
-    warn "    sudo atrm $AT_JOB"
-    warn "If your session drops, wait 10 minutes and it will come back."
+    ask FWSTILL "Still connected? Type yes to keep the firewall" ""
+    if [ "$FWSTILL" = yes ]; then
+      [ -n "$AT_JOB" ] && atrm "$AT_JOB" 2>/dev/null || true
+      ok "firewall made permanent"
+    else
+      warn "leaving the rollback armed — the firewall will disable itself shortly"
+    fi
   else
     warn "firewall not applied — the server is currently unfirewalled"
   fi
