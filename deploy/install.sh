@@ -424,6 +424,19 @@ else
     # Added before enabling, never after: the rule has to exist first.
     for p in $(session_ports); do ufw allow "$p/tcp" >/dev/null; done
     ufw --force enable                 >/dev/null
+
+    # Oracle Cloud images ship their own iptables policy that rejects
+    # everything except SSH, and it sits BEFORE ufw's chains in INPUT - so
+    # ufw's rules are never evaluated and every port except 22 silently times
+    # out from outside while looking perfectly correct in "ufw status".
+    # Removing a REJECT only ever opens things, and the INPUT policy stays
+    # DROP, so ufw remains the one deciding.
+    if iptables -C INPUT -j REJECT --reject-with icmp-host-prohibited 2>/dev/null; then
+      iptables -D INPUT -j REJECT --reject-with icmp-host-prohibited
+      command -v netfilter-persistent >/dev/null && netfilter-persistent save >/dev/null 2>&1 || true
+      ok "removed the provider's catch-all REJECT that was shadowing ufw"
+    fi
+
     ok "firewall active"
 
     # Answering proves the connection survived, so the rollback can be
