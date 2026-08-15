@@ -126,6 +126,50 @@ Per device, before it goes on a truck:
 | `(P10,1,120)` | SMS alarm timezone offset: Libya is UTC+2. |
 | `(P94,1,3)` | Enable IMEI + fence ID in P45 reports. |
 
+## Evaluation period
 
+The platform can run for a fixed, agreed pilot period, after which continued
+use depends on approval. This is a **disclosed term of the evaluation
+agreement**, implemented as ordinary, findable code — not a hidden trigger and
+not obfuscated. The client's own team is expected to be able to read it.
 
+**What it is:** a single environment variable, `EVALUATION_EXPIRES_AT` in
+`.env`, holding a date (`YYYY-MM-DD`). The check lives in
+[`src/evaluation.ts`](src/evaluation.ts) and is a plain local date comparison —
+no remote call, no signing, no network dependency of any kind.
+
+**Before the date:** the platform runs completely normally. There is no
+countdown or banner shown to end users; the only mention is one line in the
+service logs at startup (`journalctl -u zee-api`).
+
+**On or after the date:** both the API and the device gateway stop serving.
+Anyone opening the console sees an "evaluation period ended" notice; the
+gateway closes its port so no positions are recorded and no unlock — manual or
+arrival — can fire. Each process stays running but inert (they are
+`Restart=always`, so exiting would just restart-loop).
+
+**Nothing is ever deleted.** No data, no files, no database records. The locks
+themselves are untouched and keep their physical state.
+
+**To extend or remove the limit** (e.g. once the deal is approved), edit
+`.env` and restart — the platform resumes immediately, with everything intact:
+
+```bash
+# a later date, or leave it blank for no limit at all
+sudo sed -i 's/^EVALUATION_EXPIRES_AT=.*/EVALUATION_EXPIRES_AT=2027-01-31/' /home/zee/htdocs/locks.ahmedhammad.page/.env
+sudo systemctl restart zee-gateway zee-api
+```
+
+**To remove the mechanism entirely from the code:** delete
+[`src/evaluation.ts`](src/evaluation.ts) and the two `evaluationPeriod` gates
+(one `onRequest` hook in [`src/api/server.ts`](src/api/server.ts), one
+`watch()` block in [`src/gateway/index.ts`](src/gateway/index.ts)), plus
+[`public/expired.html`](public/expired.html).
+
+**Not tamper-proof, by design.** Anyone with access to the server can edit
+`.env` or change the system clock to bypass it. Resisting that would require a
+remote licence check, which trades a simple pilot limit for a network
+dependency that could strand a working fleet the day it is unreachable — the
+wrong trade for locks on fuel tankers. For a disclosed evaluation, the honest
+local limit is sufficient.
 

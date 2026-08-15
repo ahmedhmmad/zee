@@ -11,6 +11,7 @@ import { config } from '../config.ts';
 import { createListener, pool } from '../db.ts';
 import { DeviceSession } from './session.ts';
 import { clearAllConnections, requeueUnansweredCommands } from './store.ts';
+import { evaluationPeriod } from '../evaluation.ts';
 
 /**
  * Live sockets by device ID. In-memory is correct at single-instance scale;
@@ -80,13 +81,44 @@ async function main(): Promise<void> {
     })();
   }, 60_000).unref();
 
-  server.listen(config.gateway.port, config.gateway.host, () => {
-    console.log(`[gateway] listening on ${config.gateway.host}:${config.gateway.port}`);
-    console.log(`[gateway] device allowlist ${config.requireKnownDevice ? 'ENFORCED' : 'DISABLED (dev only)'}`);
+  /**
+   * Evaluation-period expiry: stop accepting devices and drop the connected
+   * ones. See src/evaluation.ts and README "Evaluation period".
+   *
+   * Closing the listener is what stops arrival unlocks too. They are evaluated
+   * from incoming positions, so with no positions arriving there is no path
+   * left that can open a lock on its own — which is the behaviour we want, and
+   * not something to leave to a second check somewhere else.
+   *
+   * The process stays alive and inert. Restart=always means exiting here would
+   * restart-loop every five seconds and bury the reason in the log.
+   */
+  const stopWatching = evaluationPeriod.watch(() => {
+    console.error(`[gateway] ${evaluationPeriod.banner()}`);
+    server.close();
+    for (const session of sessions.values()) session.socket.destroy();
+    sessions.clear();
+    void clearAllConnections().catch(() => {});
   });
+
+  if (evaluationPeriod.isExpired()) {
+    // Already lapsed at boot: never open the port in the first place.
+    console.error(`[gateway] ${evaluationPeriod.banner()}`);
+  } else {
+    if (evaluationPeriod.enabled) {
+      console.log(
+        `[gateway] evaluation period active — ${evaluationPeriod.daysRemaining()} day(s) left, ends ${evaluationPeriod.expiresAt?.toISOString().slice(0, 10)}`,
+      );
+    }
+    server.listen(config.gateway.port, config.gateway.host, () => {
+      console.log(`[gateway] listening on ${config.gateway.host}:${config.gateway.port}`);
+      console.log(`[gateway] device allowlist ${config.requireKnownDevice ? 'ENFORCED' : 'DISABLED (dev only)'}`);
+    });
+  }
 
   const shutdown = async (signal: string) => {
     console.log(`[gateway] ${signal} received, shutting down`);
+    stopWatching();
     server.close();
     for (const session of sessions.values()) session.socket.destroy();
     await listener.end().catch(() => {});

@@ -136,6 +136,17 @@ ask_secret AUTH_PASSWORD "Console login password (you will use this to sign in)"
 ask GMAPS_KEY  "Google Maps API key (blank to use OpenStreetMap)" ""
 ask DUMP_FILE  "Path to database dump from the old server (blank for empty DB)" ""
 
+# Evaluation period. A disclosed pilot term, not a hidden switch: after this
+# many days the platform stops serving and shows a notice, until the date in
+# .env is updated and the services are restarted. Nothing is deleted, and 0
+# means no limit at all. See README "Evaluation period".
+EVALUATION_EXPIRES_AT=""
+ask EVAL_DAYS "Evaluation period in days (0 for no limit)" "60"
+if printf '%s' "$EVAL_DAYS" | grep -qE '^[0-9]+$' && [ "$EVAL_DAYS" -gt 0 ]; then
+  EVALUATION_EXPIRES_AT=$(date -u -d "+$EVAL_DAYS days" +%Y-%m-%d 2>/dev/null || echo "")
+  [ -z "$EVALUATION_EXPIRES_AT" ] && die "could not compute the expiry date — is GNU date available?"
+fi
+
 if [ -n "$DUMP_FILE" ] && [ ! -r "$DUMP_FILE" ]; then
   die "cannot read dump file: $DUMP_FILE"
 fi
@@ -215,6 +226,7 @@ info "Database     local PostgreSQL + PostGIS, loopback only"
 info "Restore      ${DUMP_FILE:-none — starting with an empty database}"
 [ ${#DEVICE_IDS[@]} -gt 0 ] && info "Devices      ${#DEVICE_IDS[@]} to register: ${DEVICE_IDS[*]}"
 info "Maps         ${GMAPS_KEY:+Google}${GMAPS_KEY:-OpenStreetMap}"
+info "Evaluation   ${EVALUATION_EXPIRES_AT:+ends $EVALUATION_EXPIRES_AT ($EVAL_DAYS days)}${EVALUATION_EXPIRES_AT:-no limit}"
 info "TLS          $([ $IS_IP -eq 1 ] && echo 'none — plain HTTP, certificates need a hostname' || { [ $SKIP_TLS -eq 1 ] && echo 'skipped' || echo 'certbot, needs DNS pointing here'; })"
 info "Firewall     $([ $SKIP_FIREWALL -eq 1 ] && echo 'skipped' || echo 'asked for confirmation at the end')"
 echo
@@ -314,6 +326,11 @@ COOKIE_SECRET=$COOKIE_SECRET
 LOG_LEVEL=info
 TILE_CACHE_DIR=$APP_DIR/.cache/tiles
 GOOGLE_MAPS_API_KEY=$GMAPS_KEY
+
+# Evaluation period (disclosed pilot term). After this date the platform stops
+# serving until the date is updated and the services restarted. Blank = no
+# limit. Nothing is ever deleted. See README "Evaluation period".
+EVALUATION_EXPIRES_AT=$EVALUATION_EXPIRES_AT
 EOF
 umask 022
 chown zee:zee "$APP_DIR/.env"
@@ -494,6 +511,14 @@ fi
 bold "Done"
 info "Console    $([ $IS_IP -eq 1 ] && echo "http" || echo "https")://$DOMAIN"
 info "Sign in with the password you entered."
+if [ -n "$EVALUATION_EXPIRES_AT" ]; then
+  echo
+  info "Evaluation period ends $EVALUATION_EXPIRES_AT. After that the platform"
+  info "stops serving until you edit EVALUATION_EXPIRES_AT in $APP_DIR/.env"
+  info "(a later date, or blank for no limit) and run:"
+  info "    sudo systemctl restart zee-gateway zee-api"
+  info "Nothing is deleted — the locks and all data stay intact."
+fi
 echo
 info "Check it:"
 info "    systemctl is-active zee-gateway zee-api nginx postgresql"

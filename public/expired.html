@@ -1,0 +1,107 @@
+<!doctype html>
+<!--
+  Served for every non-API request once the trial has lapsed.
+
+  Deliberately self-contained: the expiry gate blocks the stylesheet and the
+  scripts along with everything else, so anything referenced here would arrive
+  as a 403 and the page would render unstyled.
+-->
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>انتهت فترة التقييم</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f4f5f7;
+        --card: #ffffff;
+        --ink: #1a1c1f;
+        --muted: #61656c;
+        --line: #e3e5e9;
+        --accent: #b4541f;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16181c;
+          --card: #1e2126;
+          --ink: #f0f1f3;
+          --muted: #9aa0a8;
+          --line: #2e3238;
+          --accent: #e08a4c;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 1.5rem;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: system-ui, "Segoe UI", Tahoma, sans-serif;
+        line-height: 1.7;
+      }
+      .card {
+        max-width: 34rem;
+        width: 100%;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 2rem 1.75rem;
+        box-shadow: 0 1px 3px rgb(0 0 0 / 0.06);
+      }
+      .mark {
+        font-size: 2.25rem;
+        line-height: 1;
+        margin-bottom: 0.75rem;
+      }
+      h1 {
+        margin: 0 0 0.5rem;
+        font-size: 1.4rem;
+        font-weight: 650;
+      }
+      p { margin: 0 0 0.9rem; color: var(--muted); }
+      .en {
+        margin-top: 1.5rem;
+        padding-top: 1.25rem;
+        border-top: 1px solid var(--line);
+        direction: ltr;
+        text-align: left;
+        font-size: 0.9rem;
+      }
+      .en h2 { margin: 0 0 0.4rem; font-size: 1rem; font-weight: 600; color: var(--ink); }
+      strong { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="mark">⏳</div>
+      <h1>انتهت فترة التقييم</h1>
+      <p>
+        هذه نسخة تقييمية من منظومة أقفال الشاحنات، وقد انتهت فترة التقييم المتفق عليها.
+        تم إيقاف الواجهة واستقبال بيانات الأقفال.
+      </p>
+      <p>
+        <strong>الأقفال نفسها لم تتأثر</strong> — كل قفل يحتفظ بحالته الحالية ويمكن
+        فتحه من الشاحنة كالمعتاد. المتوقف هو الفتح والمتابعة عن بُعد فقط.
+      </p>
+      <p>للتمديد أو تفعيل النسخة الكاملة، يرجى التواصل مع مزوّد المنظومة.</p>
+
+      <div class="en">
+        <h2>Evaluation period ended</h2>
+        <p>
+          This evaluation copy of the truck lock platform has reached the end of its
+          agreed evaluation period. The console and the device gateway have stopped
+          serving.
+        </p>
+        <p>
+          The locks themselves are unaffected: each keeps its current state and can
+          still be opened at the vehicle. Only remote unlocking and tracking have
+          stopped. Contact the supplier to extend or license the platform.
+        </p>
+      </div>
+    </main>
+  </body>
+</html>

@@ -7,7 +7,7 @@
  */
 
 import path from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
@@ -17,6 +17,7 @@ import { pool, createListener } from '../db.ts';
 import { apiRoutes } from './routes.ts';
 import { apiConfig } from './config.ts';
 import { fetchDevice } from './devices-query.ts';
+import { evaluationPeriod } from '../evaluation.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, '..', '..', 'public');
@@ -72,6 +73,33 @@ if (existsSync(path.join(basemapDir, 'libya.pmtiles'))) {
 } else {
   app.log.warn(`no vector basemap at ${basemapDir} — falling back to raster tiles`);
 }
+
+/**
+ * Evaluation-period gate. See src/evaluation.ts and README "Evaluation period".
+ *
+ * Registered before the routes so it covers the API, the static assets and the
+ * WebSocket alike — once the period lapses there is no path through this server
+ * that still does work.
+ *
+ * The process deliberately stays up and inert rather than exiting: both units
+ * are Restart=always, so exiting would restart-loop every five seconds and the
+ * operator would see a dead port instead of an explanation.
+ */
+const expiredPage = readFileSync(path.join(publicDir, 'expired.html'), 'utf8');
+
+app.addHook('onRequest', async (req, reply) => {
+  if (!evaluationPeriod.isExpired()) return;
+  if (req.url.startsWith('/api/')) {
+    return reply.code(403).send({
+      error: 'evaluation_period_ended',
+      expiredAt: evaluationPeriod.expiresAt?.toISOString() ?? null,
+    });
+  }
+  // Sent from memory rather than with sendFile, which sets its own 200 and
+  // would drop the 403. This is a refusal, and monitoring should read it as
+  // one rather than as a working page.
+  return reply.code(403).type('text/html; charset=utf-8').send(expiredPage);
+});
 
 /** Browsers subscribed to live updates. */
 const sockets = new Set<{ send(data: string): void }>();
@@ -157,6 +185,16 @@ async function main(): Promise<void> {
     }
     broadcast(payload);
   });
+
+  if (evaluationPeriod.enabled) {
+    if (evaluationPeriod.isExpired()) {
+      app.log.error(evaluationPeriod.banner());
+    } else {
+      app.log.info(
+        `evaluation period active — ${evaluationPeriod.daysRemaining()} day(s) left, ends ${evaluationPeriod.expiresAt?.toISOString().slice(0, 10)}`,
+      );
+    }
+  }
 
   await app.listen({ port: apiConfig.port, host: apiConfig.host });
   app.log.info(`UI available on http://${apiConfig.host}:${apiConfig.port}`);
