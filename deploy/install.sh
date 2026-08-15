@@ -433,8 +433,15 @@ else
     # DROP, so ufw remains the one deciding.
     if iptables -C INPUT -j REJECT --reject-with icmp-host-prohibited 2>/dev/null; then
       iptables -D INPUT -j REJECT --reject-with icmp-host-prohibited
-      command -v netfilter-persistent >/dev/null && netfilter-persistent save >/dev/null 2>&1 || true
       ok "removed the provider's catch-all REJECT that was shadowing ufw"
+      if command -v netfilter-persistent >/dev/null; then
+        netfilter-persistent save >/dev/null 2>&1 || true
+        ok "saved, so it stays removed after a reboot"
+      else
+        warn "could not persist that change: it is removed now, but a reboot"
+        warn "would restore it and close the ports again. If that happens, run"
+        warn "  sudo iptables -D INPUT -j REJECT --reject-with icmp-host-prohibited"
+      fi
     fi
 
     ok "firewall active"
