@@ -144,10 +144,35 @@ fi
 # empty — so the locks have to be registered here. The gateway rejects any
 # device that is not on this list, which is the only barrier against forged
 # telemetry in a protocol that has no authentication of its own.
+# The locks already commissioned in Tripoli. A device ID is printed on the
+# unit's label and is not a secret, so seeding them here removes the step most
+# likely to be mistyped — and a mistyped ID fails silently, as a lock that is
+# simply never heard from.
+PRESET_DEVICE_IDS=(8055430364 8055430383)
+PRESET_DEVICE_NAMES=("Truck 1" "Truck 2")
+
 DEVICE_IDS=(); DEVICE_NAMES=(); DEVICE_PLATES=(); DEVICE_PASSWORDS=()
 if [ -z "$DUMP_FILE" ]; then
   echo
-  info "Register your locks. The 10-digit device ID is printed on the label"
+  info "These locks are registered automatically:"
+  for i in "${!PRESET_DEVICE_IDS[@]}"; do
+    info "  ${PRESET_DEVICE_IDS[$i]}  ${PRESET_DEVICE_NAMES[$i]}"
+  done
+
+  # Asked once for the whole preset rather than per device. It has to be asked:
+  # a wrong password still lets positions arrive normally and only fails at the
+  # moment someone tries to unlock, which is the worst time to find out.
+  echo
+  ask PRESET_PASS "Unlock password for these locks" "123456"
+  for i in "${!PRESET_DEVICE_IDS[@]}"; do
+    DEVICE_IDS+=("${PRESET_DEVICE_IDS[$i]}")
+    DEVICE_NAMES+=("${PRESET_DEVICE_NAMES[$i]}")
+    DEVICE_PLATES+=("")
+    DEVICE_PASSWORDS+=("$PRESET_PASS")
+  done
+
+  echo
+  info "Any other locks? The 10-digit device ID is printed on the label"
   info "underneath each unit. Leave the ID blank when you have finished."
   while :; do
     echo
@@ -156,9 +181,12 @@ if [ -z "$DUMP_FILE" ]; then
     if ! printf '%s' "$DEV_ID" | grep -qE '^[0-9]{10}$'; then
       warn "must be exactly 10 digits"; continue
     fi
+    if printf '%s\n' "${DEVICE_IDS[@]}" | grep -qx "$DEV_ID"; then
+      warn "$DEV_ID is already on the list"; continue
+    fi
     ask DEV_NAME  "  Vehicle name"            "Truck $(( ${#DEVICE_IDS[@]} + 1 ))"
     ask DEV_PLATE "  Plate number (optional)" ""
-    ask DEV_PASS  "  Unlock password"         "123456"
+    ask DEV_PASS  "  Unlock password"         "$PRESET_PASS"
     DEVICE_IDS+=("$DEV_ID"); DEVICE_NAMES+=("$DEV_NAME")
     DEVICE_PLATES+=("$DEV_PLATE"); DEVICE_PASSWORDS+=("$DEV_PASS")
     ok "will register $DEV_ID"
