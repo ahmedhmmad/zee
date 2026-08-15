@@ -187,6 +187,29 @@ EXISTING_EVAL=""
   sed -n 's/^EVALUATION_EXPIRES_AT=//p' "$APP_DIR/.env" | head -1 | tr -d '\r'
 )
 
+# The anchor: when the evaluation period began here, recorded in the database
+# at first install and never rewritten.
+#
+# The period is measured from the anchor, not from now. Otherwise re-running
+# the install command with the same flag just issues another period, and the
+# limit never arrives - which is the whole point of having one. Re-running
+# --evaluation-minutes 30 an hour later now yields a date already in the past.
+#
+# Missing on a fresh box (no postgres, no database, or an older schema), and
+# then today is the anchor. Every failure mode here lands on "start the clock
+# now", which is correct for a first install and harmless on a re-run.
+EVAL_ANCHOR=""
+if command -v psql >/dev/null 2>&1; then
+  EVAL_ANCHOR=$(sudo -u postgres psql -tAd zee \
+    -c "SELECT value FROM platform_meta WHERE key = 'evaluation_started_at'" \
+    2>/dev/null | tr -d '[:space:]' || true)
+fi
+EVAL_ANCHOR_FOUND=1
+if [ -z "$EVAL_ANCHOR" ]; then
+  EVAL_ANCHOR=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  EVAL_ANCHOR_FOUND=0
+fi
+
 if [ -n "$EXISTING_EVAL" ] && [ $EVAL_DAYS_EXPLICIT -eq 0 ]; then
   EVALUATION_EXPIRES_AT=$EXISTING_EVAL
   info "Evaluation period already set to $EVALUATION_EXPIRES_AT — keeping it."
@@ -196,12 +219,19 @@ elif [ -n "$EVAL_MINUTES" ]; then
   # end of that day, which would give the rest of the day rather than the
   # minutes asked for.
   if [ "$EVAL_MINUTES" -gt 0 ]; then
-    EVALUATION_EXPIRES_AT=$(date -u -d "+$EVAL_MINUTES minutes" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+    EVALUATION_EXPIRES_AT=$(date -u -d "$EVAL_ANCHOR +$EVAL_MINUTES minutes" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
     [ -z "$EVALUATION_EXPIRES_AT" ] && die "could not compute the expiry time — is GNU date available?"
   fi
 elif [ "$EVAL_DAYS" -gt 0 ]; then
-  EVALUATION_EXPIRES_AT=$(date -u -d "+$EVAL_DAYS days" +%Y-%m-%d 2>/dev/null || echo "")
+  EVALUATION_EXPIRES_AT=$(date -u -d "$EVAL_ANCHOR +$EVAL_DAYS days" +%Y-%m-%d 2>/dev/null || echo "")
   [ -z "$EVALUATION_EXPIRES_AT" ] && die "could not compute the expiry date — is GNU date available?"
+fi
+
+# Say plainly that the clock did not restart, so a re-run producing a date in
+# the past reads as the mechanism working rather than as a broken install.
+if [ $EVAL_ANCHOR_FOUND -eq 1 ] && [ $EVAL_DAYS_EXPLICIT -eq 1 ]; then
+  info "Evaluation period is measured from the first install here"
+  info "($EVAL_ANCHOR) — re-running does not restart it."
 fi
 
 if [ -n "$DUMP_FILE" ] && [ ! -r "$DUMP_FILE" ]; then
@@ -396,6 +426,18 @@ ok ".env written, owner zee, mode 600"
 
 runuser -u zee -- node --env-file-if-exists=.env scripts/migrate.ts >/dev/null
 ok "database migrations applied"
+
+# Record when the evaluation period began, now that platform_meta exists.
+# DO NOTHING, never DO UPDATE: the anchor is written once at first install and
+# is what stops a re-run from restarting the clock. Overwriting it here would
+# undo the whole point.
+if [ -n "$EVALUATION_EXPIRES_AT" ]; then
+  sudo -u postgres psql -qd zee -c "
+    INSERT INTO platform_meta (key, value)
+    VALUES ('evaluation_started_at', '$(sql_quote "$EVAL_ANCHOR")')
+    ON CONFLICT (key) DO NOTHING;"
+  [ $EVAL_ANCHOR_FOUND -eq 0 ] && ok "evaluation period anchored to $EVAL_ANCHOR"
+fi
 
 # Registered after the migrations, because the devices table has to exist.
 # ON CONFLICT keeps the script safe to re-run.

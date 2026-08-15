@@ -165,6 +165,25 @@ be safe to re-run when something needs fixing, and recomputing the date there
 would restart the clock every time, so the period could never end. Pass
 `--evaluation-days N` explicitly to change it.
 
+**Re-running with a flag does not renew it either.** The instant of the first
+install is recorded once in `platform_meta` (see
+[`migrations/011_platform_meta.sql`](migrations/011_platform_meta.sql)) and the
+expiry is computed as *anchor + length*, not *now + length*. Running
+`--evaluation-minutes 30` again an hour later therefore produces a date already
+in the past, and the platform stays stopped.
+
+To extend legitimately, pass a longer length — it is still measured from the
+first install, so `--evaluation-days 60` means sixty days from when the client
+received the platform, whenever you run it:
+
+```bash
+sudo bash install.sh --evaluation-days 60   # or 0 for no limit
+```
+
+The anchor lives in the database rather than a file so that resetting it costs
+the positions, lock events and audit trail stored alongside it. That is a
+deterrent, not a protection: anyone with database access can edit the row.
+
 **Before the date:** the platform runs completely normally. There is no
 countdown or banner shown to end users; the only mention is one line in the
 service logs at startup (`journalctl -u zee-api`).
@@ -193,10 +212,19 @@ sudo systemctl restart zee-gateway zee-api
 `watch()` block in [`src/gateway/index.ts`](src/gateway/index.ts)), plus
 [`public/expired.html`](public/expired.html).
 
-**Not tamper-proof, by design.** Anyone with access to the server can edit
-`.env` or change the system clock to bypass it. Resisting that would require a
-remote licence check, which trades a simple pilot limit for a network
-dependency that could strand a working fleet the day it is unreachable — the
-wrong trade for locks on fuel tankers. For a disclosed evaluation, the honest
-local limit is sufficient.
+**Not tamper-proof, by design.** Anyone with root can edit `.env`, change the
+system clock, or edit the anchor row. What the mechanism actually achieves is
+narrower than it looks, and worth stating plainly:
+
+- it stops the **passive** case — the pilot ends, nobody acts, the platform
+  stops on its own;
+- it makes continuing a **deliberate, documented act** rather than a default,
+  which is what matters under a disclosed agreement;
+- it is **not** a lock, and does not pretend to be one.
+
+Resisting a determined administrator would require a remote licence check,
+which trades a simple pilot limit for a network dependency that could strand a
+working fleet the day it is unreachable — the wrong trade for locks on fuel
+tankers. For a disclosed evaluation the honest local limit is sufficient; the
+written agreement, not the code, is the real protection.
 
