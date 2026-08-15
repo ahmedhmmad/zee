@@ -150,7 +150,7 @@ if [ -z "$DUMP_FILE" ]; then
     if ! printf '%s' "$DEV_ID" | grep -qE '^[0-9]{10}$'; then
       warn "must be exactly 10 digits"; continue
     fi
-    ask DEV_NAME  "  Vehicle name"            "شاحنة $(( ${#DEVICE_IDS[@]} + 1 ))"
+    ask DEV_NAME  "  Vehicle name"            "Truck $(( ${#DEVICE_IDS[@]} + 1 ))"
     ask DEV_PLATE "  Plate number (optional)" ""
     ask DEV_PASS  "  Unlock password"         "123456"
     DEVICE_IDS+=("$DEV_ID"); DEVICE_NAMES+=("$DEV_NAME")
@@ -159,8 +159,15 @@ if [ -z "$DUMP_FILE" ]; then
   done
 fi
 
-# Single quotes are the only thing that can break out of a literal here.
-sql_quote() { printf "%s" "${1//\'/\'\'}"; }
+# Two hazards in one place: a single quote would end the SQL literal, and a
+# terminal that mangles non-ASCII input sends byte sequences Postgres rejects
+# outright. Drop the invalid ones rather than failing the whole run over a
+# vehicle name that can be corrected in the console.
+sql_quote() {
+  local v
+  v=$(printf '%s' "$1" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null || printf '%s' "$1")
+  printf '%s' "${v//\'/\'\'}"
+}
 
 # Generated, not asked: nothing needs to know these but the application.
 DB_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)
@@ -185,6 +192,7 @@ ask CONFIRM "Continue? (yes/no)" "no"
 bold "1/6  Installing packages"
 
 export DEBIAN_FRONTEND=noninteractive
+export PGCLIENTENCODING=UTF8
 apt-get update -qq
 
 if ! command -v node >/dev/null || [ "$(node -v | cut -c2- | cut -d. -f1)" -lt 22 ]; then
