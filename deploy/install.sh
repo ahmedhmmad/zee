@@ -115,8 +115,17 @@ info "Passwords are hidden as you type. The database password and session"
 info "secret are generated automatically and never displayed."
 echo
 
-ask DOMAIN     "Console hostname"            "locks.ahmedhammad.page"
-ask EMAIL      "Email for certificate notices" "eng.ahammad7@gmail.com"
+DETECTED_IP=$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || echo "")
+ask DOMAIN "Console hostname, or leave the IP for testing" "${DETECTED_IP:-locks.ahmedhammad.page}"
+
+# Let's Encrypt will not issue for a bare IP, so an address means plain HTTP.
+IS_IP=0
+if printf '%s' "$DOMAIN" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+  IS_IP=1
+  SKIP_TLS=1
+fi
+EMAIL=""
+[ $IS_IP -eq 1 ] || ask EMAIL "Email for certificate notices" "eng.ahammad7@gmail.com"
 ask_secret AUTH_PASSWORD "Console login password (you will use this to sign in)"
 ask GMAPS_KEY  "Google Maps API key (blank to use OpenStreetMap)" ""
 ask DUMP_FILE  "Path to database dump from the old server (blank for empty DB)" ""
@@ -158,14 +167,14 @@ DB_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)
 COOKIE_SECRET=$(openssl rand -hex 32)
 
 bold "About to install"
-info "Console      https://$DOMAIN"
+info "Console      $([ $IS_IP -eq 1 ] && echo "http" || echo "https")://$DOMAIN"
 info "Gateway      port $GATEWAY_PORT, public"
 info "Application  $APP_DIR, running as user 'zee'"
 info "Database     local PostgreSQL + PostGIS, loopback only"
 info "Restore      ${DUMP_FILE:-none — starting with an empty database}"
 [ ${#DEVICE_IDS[@]} -gt 0 ] && info "Devices      ${#DEVICE_IDS[@]} to register: ${DEVICE_IDS[*]}"
 info "Maps         ${GMAPS_KEY:+Google}${GMAPS_KEY:-OpenStreetMap}"
-info "TLS          $([ $SKIP_TLS -eq 1 ] && echo 'skipped' || echo 'certbot, needs DNS pointing here')"
+info "TLS          $([ $IS_IP -eq 1 ] && echo 'none — plain HTTP, certificates need a hostname' || { [ $SKIP_TLS -eq 1 ] && echo 'skipped' || echo 'certbot, needs DNS pointing here'; })"
 info "Firewall     $([ $SKIP_FIREWALL -eq 1 ] && echo 'skipped' || echo 'asked for confirmation at the end')"
 echo
 ask CONFIRM "Continue? (yes/no)" "no"
@@ -317,7 +326,7 @@ bold "5/6  Web server"
 cat > /etc/nginx/sites-available/zee <<EOF
 server {
     listen 80;
-    server_name $DOMAIN;
+    server_name $([ $IS_IP -eq 1 ] && echo "_" || echo "$DOMAIN");
 
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "DENY" always;
@@ -343,7 +352,11 @@ nginx -t >/dev/null 2>&1 || die "nginx configuration is invalid"
 systemctl reload nginx
 ok "nginx proxying $DOMAIN to the application"
 
-if [ $SKIP_TLS -eq 1 ]; then
+if [ $IS_IP -eq 1 ]; then
+  warn "reached by IP, so the console is plain HTTP — fine for testing, but the"
+  warn "login password crosses the network unencrypted. Point a hostname here and"
+  warn "re-run to get a certificate."
+elif [ $SKIP_TLS -eq 1 ]; then
   warn "TLS skipped — run later: certbot --nginx -d $DOMAIN --redirect -m $EMAIL --agree-tos"
 else
   RESOLVED=$(getent hosts "$DOMAIN" | awk '{print $1}' | head -1 || true)
@@ -412,7 +425,7 @@ fi
 # --- summary ----------------------------------------------------------------
 
 bold "Done"
-info "Console    https://$DOMAIN"
+info "Console    $([ $IS_IP -eq 1 ] && echo "http" || echo "https")://$DOMAIN"
 info "Sign in with the password you entered."
 echo
 info "Check it:"
