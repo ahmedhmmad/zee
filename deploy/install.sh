@@ -312,8 +312,17 @@ info "Application  $APP_DIR, running as user 'zee'"
 info "Database     local PostgreSQL + PostGIS, loopback only"
 info "Restore      ${DUMP_FILE:-none — starting with an empty database}"
 [ ${#DEVICE_IDS[@]} -gt 0 ] && info "Devices      ${#DEVICE_IDS[@]} to register: ${DEVICE_IDS[*]}"
-info "Maps         ${GMAPS_KEY:+Google}${GMAPS_KEY:-OpenStreetMap}"
-info "Evaluation   ${EVALUATION_EXPIRES_AT:+ends $EVALUATION_EXPIRES_AT}${EVALUATION_EXPIRES_AT:-no limit}"
+# Spelled out rather than done with ${x:+a}${x:-b}: that pair reads as an
+# if/else but is not one - ${x:-b} substitutes x's own VALUE whenever x is set,
+# so both halves fire and the value is appended to the label. Here that printed
+# the Google Maps key to the terminal in a script whose whole premise is that
+# secrets are never displayed.
+if [ -n "$GMAPS_KEY" ]; then info "Maps         Google"; else info "Maps         OpenStreetMap"; fi
+if [ -n "$EVALUATION_EXPIRES_AT" ]; then
+  info "Evaluation   ends $EVALUATION_EXPIRES_AT"
+else
+  info "Evaluation   no limit"
+fi
 info "TLS          $([ $IS_IP -eq 1 ] && echo 'none — plain HTTP, certificates need a hostname' || { [ $SKIP_TLS -eq 1 ] && echo 'skipped' || echo 'certbot, needs DNS pointing here'; })"
 info "Firewall     $([ $SKIP_FIREWALL -eq 1 ] && echo 'skipped' || echo 'asked for confirmation at the end')"
 echo
