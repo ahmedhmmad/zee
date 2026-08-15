@@ -12,6 +12,10 @@
 #   --skip-tls           deploy without requesting a certificate (DNS not ready yet)
 #   --evaluation-days N  length of the agreed evaluation period, counted from
 #                        this install. 0 means no limit. Defaults to 60.
+#   --evaluation-minutes N
+#                        same, in minutes. For demonstrating the expiry itself
+#                        inside one sitting; use --evaluation-days for a real
+#                        pilot.
 #
 # Safe to re-run: every stage checks whether its work is already done. A re-run
 # keeps the evaluation date already in .env unless --evaluation-days is given
@@ -29,6 +33,7 @@ SKIP_TLS=0
 # than asked for: it is a term of the pilot agreement fixed by the supplier,
 # not a choice made by whoever happens to run the installer.
 EVAL_DAYS=60
+EVAL_MINUTES=""
 EVAL_DAYS_EXPLICIT=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -37,9 +42,15 @@ while [ $# -gt 0 ]; do
     --evaluation-days)
       shift
       [ $# -gt 0 ] || { echo "--evaluation-days needs a number" >&2; exit 2; }
-      EVAL_DAYS=$1; EVAL_DAYS_EXPLICIT=1 ;;
+      EVAL_DAYS=$1; EVAL_MINUTES=""; EVAL_DAYS_EXPLICIT=1 ;;
     --evaluation-days=*)
-      EVAL_DAYS=${1#*=}; EVAL_DAYS_EXPLICIT=1 ;;
+      EVAL_DAYS=${1#*=}; EVAL_MINUTES=""; EVAL_DAYS_EXPLICIT=1 ;;
+    --evaluation-minutes)
+      shift
+      [ $# -gt 0 ] || { echo "--evaluation-minutes needs a number" >&2; exit 2; }
+      EVAL_MINUTES=$1; EVAL_DAYS_EXPLICIT=1 ;;
+    --evaluation-minutes=*)
+      EVAL_MINUTES=${1#*=}; EVAL_DAYS_EXPLICIT=1 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -47,6 +58,10 @@ done
 
 if ! printf '%s' "$EVAL_DAYS" | grep -qE '^[0-9]+$'; then
   echo "--evaluation-days must be a whole number of days (0 for no limit)" >&2
+  exit 2
+fi
+if [ -n "$EVAL_MINUTES" ] && ! printf '%s' "$EVAL_MINUTES" | grep -qE '^[0-9]+$'; then
+  echo "--evaluation-minutes must be a whole number of minutes (0 for no limit)" >&2
   exit 2
 fi
 
@@ -176,6 +191,14 @@ if [ -n "$EXISTING_EVAL" ] && [ $EVAL_DAYS_EXPLICIT -eq 0 ]; then
   EVALUATION_EXPIRES_AT=$EXISTING_EVAL
   info "Evaluation period already set to $EVALUATION_EXPIRES_AT — keeping it."
   info "Pass --evaluation-days N to change it."
+elif [ -n "$EVAL_MINUTES" ]; then
+  # Minutes need a full instant, not a date: a bare YYYY-MM-DD is read as the
+  # end of that day, which would give the rest of the day rather than the
+  # minutes asked for.
+  if [ "$EVAL_MINUTES" -gt 0 ]; then
+    EVALUATION_EXPIRES_AT=$(date -u -d "+$EVAL_MINUTES minutes" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+    [ -z "$EVALUATION_EXPIRES_AT" ] && die "could not compute the expiry time — is GNU date available?"
+  fi
 elif [ "$EVAL_DAYS" -gt 0 ]; then
   EVALUATION_EXPIRES_AT=$(date -u -d "+$EVAL_DAYS days" +%Y-%m-%d 2>/dev/null || echo "")
   [ -z "$EVALUATION_EXPIRES_AT" ] && die "could not compute the expiry date — is GNU date available?"
@@ -547,9 +570,13 @@ info "Console    $([ $IS_IP -eq 1 ] && echo "http" || echo "https")://$DOMAIN"
 info "Sign in with the password you entered."
 if [ -n "$EVALUATION_EXPIRES_AT" ]; then
   echo
-  info "Evaluation period ends $EVALUATION_EXPIRES_AT. After that the platform"
-  info "stops serving until you edit EVALUATION_EXPIRES_AT in $APP_DIR/.env"
-  info "(a later date, or blank for no limit) and run:"
+  # Also shown in the server's own timezone: a short evaluation is watched in
+  # real time, and translating UTC in your head while waiting is a good way to
+  # think the expiry has failed when it simply has not arrived yet.
+  EVAL_LOCAL=$(date -d "$EVALUATION_EXPIRES_AT" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || echo "")
+  info "Evaluation period ends $EVALUATION_EXPIRES_AT${EVAL_LOCAL:+  (local: $EVAL_LOCAL)}"
+  info "After that the platform stops serving until EVALUATION_EXPIRES_AT in"
+  info "$APP_DIR/.env is changed (a later date, or blank for no limit) and:"
   info "    sudo systemctl restart zee-gateway zee-api"
   info "Nothing is deleted — the locks and all data stay intact."
 fi

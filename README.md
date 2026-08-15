@@ -149,6 +149,17 @@ sudo bash install.sh --evaluation-days 60
 It is a command-line option rather than a prompt because the length is a term
 of the agreement, not a choice for whoever runs the installer.
 
+`--evaluation-minutes N` does the same in minutes, for demonstrating the expiry
+itself inside one sitting rather than waiting out a real pilot:
+
+```bash
+sudo bash install.sh --evaluation-minutes 30
+```
+
+Minutes are written as a full ISO instant rather than a date, because a bare
+`YYYY-MM-DD` means the *end of that day* and would grant the rest of the day
+instead of the minutes asked for.
+
 Re-running the installer **keeps the date already in `.env`**. It is meant to
 be safe to re-run when something needs fixing, and recomputing the date there
 would restart the clock every time, so the period could never end. Pass
