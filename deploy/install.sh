@@ -322,7 +322,11 @@ for unit in zee-gateway zee-api; do
     "$APP_DIR/deploy/$unit.service" > "/etc/systemd/system/$unit.service"
 done
 systemctl daemon-reload
-systemctl enable --now zee-gateway zee-api >/dev/null 2>&1
+systemctl enable zee-gateway zee-api >/dev/null 2>&1
+# restart, not "enable --now": a re-run rotates the database password and
+# rewrites .env, but --now leaves an already-running service holding the
+# credentials it loaded at first start, which then fails to authenticate.
+systemctl restart zee-gateway zee-api
 sleep 2
 
 systemctl is-active --quiet zee-gateway || die "zee-gateway did not start: journalctl -u zee-gateway -n 30"
