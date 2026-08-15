@@ -8,10 +8,14 @@
 #   sudo bash install.sh
 #
 # Options:
-#   --skip-firewall   deploy the application but leave ufw alone
-#   --skip-tls        deploy without requesting a certificate (DNS not ready yet)
+#   --skip-firewall      deploy the application but leave ufw alone
+#   --skip-tls           deploy without requesting a certificate (DNS not ready yet)
+#   --evaluation-days N  length of the agreed evaluation period, counted from
+#                        this install. 0 means no limit. Defaults to 60.
 #
-# Safe to re-run: every stage checks whether its work is already done.
+# Safe to re-run: every stage checks whether its work is already done. A re-run
+# keeps the evaluation date already in .env unless --evaluation-days is given
+# explicitly, so re-running to fix something cannot silently renew the period.
 # Secrets are read silently and never printed.
 
 set -euo pipefail
@@ -21,13 +25,30 @@ exec 3</dev/tty || exec 3</dev/stdin
 
 SKIP_FIREWALL=0
 SKIP_TLS=0
-for arg in "$@"; do
-  case "$arg" in
+# Evaluation period, in days from this install. Set on the command line rather
+# than asked for: it is a term of the pilot agreement fixed by the supplier,
+# not a choice made by whoever happens to run the installer.
+EVAL_DAYS=60
+EVAL_DAYS_EXPLICIT=0
+while [ $# -gt 0 ]; do
+  case "$1" in
     --skip-firewall) SKIP_FIREWALL=1 ;;
     --skip-tls)      SKIP_TLS=1 ;;
-    *) echo "unknown option: $arg" >&2; exit 2 ;;
+    --evaluation-days)
+      shift
+      [ $# -gt 0 ] || { echo "--evaluation-days needs a number" >&2; exit 2; }
+      EVAL_DAYS=$1; EVAL_DAYS_EXPLICIT=1 ;;
+    --evaluation-days=*)
+      EVAL_DAYS=${1#*=}; EVAL_DAYS_EXPLICIT=1 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
+  shift
 done
+
+if ! printf '%s' "$EVAL_DAYS" | grep -qE '^[0-9]+$'; then
+  echo "--evaluation-days must be a whole number of days (0 for no limit)" >&2
+  exit 2
+fi
 
 APP_DIR=/home/zee/app
 REPO=https://github.com/ahmedhmmad/zee.git
@@ -137,12 +158,25 @@ ask GMAPS_KEY  "Google Maps API key (blank to use OpenStreetMap)" ""
 ask DUMP_FILE  "Path to database dump from the old server (blank for empty DB)" ""
 
 # Evaluation period. A disclosed pilot term, not a hidden switch: after this
-# many days the platform stops serving and shows a notice, until the date in
-# .env is updated and the services are restarted. Nothing is deleted, and 0
-# means no limit at all. See README "Evaluation period".
+# date the platform stops serving and shows a notice, until the date in .env is
+# updated and the services restarted. Nothing is deleted. See README
+# "Evaluation period".
+#
+# An existing date survives a re-run untouched. The installer is meant to be
+# safe to re-run when something needs fixing, and recomputing the date there
+# would quietly restart the clock every time - so the period could never
+# actually end. Passing --evaluation-days explicitly is the way to change it.
 EVALUATION_EXPIRES_AT=""
-ask EVAL_DAYS "Evaluation period in days (0 for no limit)" "60"
-if printf '%s' "$EVAL_DAYS" | grep -qE '^[0-9]+$' && [ "$EVAL_DAYS" -gt 0 ]; then
+EXISTING_EVAL=""
+[ -r "$APP_DIR/.env" ] && EXISTING_EVAL=$(
+  sed -n 's/^EVALUATION_EXPIRES_AT=//p' "$APP_DIR/.env" | head -1 | tr -d '\r'
+)
+
+if [ -n "$EXISTING_EVAL" ] && [ $EVAL_DAYS_EXPLICIT -eq 0 ]; then
+  EVALUATION_EXPIRES_AT=$EXISTING_EVAL
+  info "Evaluation period already set to $EVALUATION_EXPIRES_AT — keeping it."
+  info "Pass --evaluation-days N to change it."
+elif [ "$EVAL_DAYS" -gt 0 ]; then
   EVALUATION_EXPIRES_AT=$(date -u -d "+$EVAL_DAYS days" +%Y-%m-%d 2>/dev/null || echo "")
   [ -z "$EVALUATION_EXPIRES_AT" ] && die "could not compute the expiry date — is GNU date available?"
 fi
@@ -226,7 +260,7 @@ info "Database     local PostgreSQL + PostGIS, loopback only"
 info "Restore      ${DUMP_FILE:-none — starting with an empty database}"
 [ ${#DEVICE_IDS[@]} -gt 0 ] && info "Devices      ${#DEVICE_IDS[@]} to register: ${DEVICE_IDS[*]}"
 info "Maps         ${GMAPS_KEY:+Google}${GMAPS_KEY:-OpenStreetMap}"
-info "Evaluation   ${EVALUATION_EXPIRES_AT:+ends $EVALUATION_EXPIRES_AT ($EVAL_DAYS days)}${EVALUATION_EXPIRES_AT:-no limit}"
+info "Evaluation   ${EVALUATION_EXPIRES_AT:+ends $EVALUATION_EXPIRES_AT}${EVALUATION_EXPIRES_AT:-no limit}"
 info "TLS          $([ $IS_IP -eq 1 ] && echo 'none — plain HTTP, certificates need a hostname' || { [ $SKIP_TLS -eq 1 ] && echo 'skipped' || echo 'certbot, needs DNS pointing here'; })"
 info "Firewall     $([ $SKIP_FIREWALL -eq 1 ] && echo 'skipped' || echo 'asked for confirmation at the end')"
 echo

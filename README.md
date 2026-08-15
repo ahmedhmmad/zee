@@ -138,6 +138,22 @@ not obfuscated. The client's own team is expected to be able to read it.
 [`src/evaluation.ts`](src/evaluation.ts) and is a plain local date comparison —
 no remote call, no signing, no network dependency of any kind.
 
+**Set at install time**, counted from the day the installer runs, so the period
+starts when the client actually receives the platform:
+
+```bash
+sudo bash install.sh --evaluation-days 60
+```
+
+`--evaluation-days 0` means no limit; omitting the flag defaults to 60 days.
+It is a command-line option rather than a prompt because the length is a term
+of the agreement, not a choice for whoever runs the installer.
+
+Re-running the installer **keeps the date already in `.env`**. It is meant to
+be safe to re-run when something needs fixing, and recomputing the date there
+would restart the clock every time, so the period could never end. Pass
+`--evaluation-days N` explicitly to change it.
+
 **Before the date:** the platform runs completely normally. There is no
 countdown or banner shown to end users; the only mention is one line in the
 service logs at startup (`journalctl -u zee-api`).
@@ -156,7 +172,7 @@ themselves are untouched and keep their physical state.
 
 ```bash
 # a later date, or leave it blank for no limit at all
-sudo sed -i 's/^EVALUATION_EXPIRES_AT=.*/EVALUATION_EXPIRES_AT=2027-01-31/' /home/zee/htdocs/locks.ahmedhammad.page/.env
+sudo sed -i 's/^EVALUATION_EXPIRES_AT=.*/EVALUATION_EXPIRES_AT=2027-01-31/' /home/zee/app/.env
 sudo systemctl restart zee-gateway zee-api
 ```
 
