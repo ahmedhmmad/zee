@@ -20,8 +20,12 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
       path: '/',
       httpOnly: true,
       sameSite: 'strict',
-      // Nginx terminates TLS, so the cookie is only ever sent over HTTPS.
-      secure: true,
+      // Follow the scheme the request actually arrived on, read from
+      // X-Forwarded-Proto. A Secure cookie is silently discarded by the
+      // browser over plain HTTP, so login returns 200 and then every
+      // subsequent request is unauthenticated - the operator is locked out of
+      // their own console with no error to go on. Behind TLS this stays true.
+      secure: req.protocol === 'https',
       signed: true,
       maxAge: 60 * 60 * 12,
     });
