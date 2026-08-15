@@ -88,8 +88,14 @@ session_ports() {
   # connection; anything appearing in both is a service somebody is connected
   # to. Done in one awk pass so nothing depends on sort order.
   {
-    ss -Hltn 2>/dev/null              | awk '{ sub(/.*:/, "", $4); print "L", $4 }'
-    ss -Htn state established 2>/dev/null | awk '{ sub(/.*:/, "", $3); print "E", $3 }'
+    # Loopback-only listeners cannot be a remote access path, whatever is
+    # connected to them: PostgreSQL and the API both live there.
+    ss -Hltn 2>/dev/null |
+      awk '$4 !~ /^(127\.|\[::1\])/ { sub(/.*:/, "", $4); print "L", $4 }'
+    # And only peers from off-box count. A loopback peer is the application
+    # talking to its own database, not a person logged in.
+    ss -Htn state established 2>/dev/null |
+      awk '$4 !~ /^(127\.|\[::1\])/ { sub(/.*:/, "", $3); print "E", $3 }'
   } | awk '$1 == "L" { listening[$2] = 1 }
            $1 == "E" && listening[$2] && !seen[$2]++ { print $2 }'
 }
@@ -201,7 +207,7 @@ if ! command -v node >/dev/null || [ "$(node -v | cut -c2- | cut -d. -f1)" -lt 2
 fi
 ok "Node $(node -v)"
 
-apt-get install -y -qq postgresql postgresql-contrib nginx certbot python3-certbot-nginx git at curl
+apt-get install -y -qq postgresql postgresql-contrib nginx certbot python3-certbot-nginx git at curl ufw
 PG_VER=$(psql --version | grep -oP '\d+' | head -1)
 apt-get install -y -qq postgis "postgresql-${PG_VER}-postgis-3"
 ok "PostgreSQL $PG_VER with PostGIS, nginx, certbot"
@@ -402,6 +408,7 @@ else
   ask FWCONFIRM "Apply firewall now? (yes/no)" "no"
 
   if [ "$FWCONFIRM" = yes ]; then
+    command -v ufw >/dev/null || die "ufw is not installed — re-run to install it"
     echo "ufw --force disable" | at now + 10 minutes 2>/dev/null
     AT_JOB=$(atq | sort -n | tail -1 | awk '{print $1}')
 
