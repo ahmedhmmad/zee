@@ -19,7 +19,45 @@ import type { FastifyInstance } from 'fastify';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR = process.env.TILE_CACHE_DIR ?? path.join(here, '..', '..', '.cache', 'tiles');
 
-const UPSTREAM = process.env.TILE_UPSTREAM ?? 'https://tile.openstreetmap.org';
+/**
+ * Upstreams, as templates.
+ *
+ * A template rather than a base URL because providers disagree on both the
+ * axis order and the extension: OpenStreetMap serves {z}/{x}/{y}.png, Esri
+ * serves {z}/{y}/{x} with no extension. Swapping only the host would fetch
+ * transposed tiles - a map that renders perfectly and shows the wrong place.
+ *
+ * A fixed table, never a URL from the request, so this cannot be turned into
+ * an open proxy for fetching arbitrary hosts through our server.
+ */
+export const PROVIDERS: Record<string, { url: string; attribution: string }> = {
+  osm: {
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '© OpenStreetMap contributors',
+  },
+  // Esri World Imagery: satellite, free, no API key. Labels are not baked in -
+  // it is imagery only - which is the trade against Google's street data.
+  esri: {
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Esri, Maxar, Earthstar Geographics',
+  },
+  // Place and road labels, transparent, designed to overlay the imagery above.
+  'esri-labels': {
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Esri',
+  },
+};
+
+const DEFAULT_PROVIDER = process.env.TILE_PROVIDER ?? 'osm';
+
+export function upstreamUrl(provider: string, z: number, x: number, y: number): string | null {
+  const entry = PROVIDERS[provider];
+  if (!entry) return null;
+  return entry.url
+    .replace('{z}', String(z))
+    .replace('{x}', String(x))
+    .replace('{y}', String(y));
+}
 
 /**
  * OSM's policy requires a User-Agent identifying the application. Anonymous
@@ -28,6 +66,19 @@ const UPSTREAM = process.env.TILE_UPSTREAM ?? 'https://tile.openstreetmap.org';
 const USER_AGENT =
   process.env.TILE_USER_AGENT ?? 'ZeeLockPlatform/0.1 (fleet monitoring; +https://locks.ahmedhammad.page)';
 
+/**
+ * Content type from the magic bytes, not from a hardcoded assumption.
+ *
+ * Providers disagree: OpenStreetMap serves PNG, Esri's World Imagery serves
+ * JPEG despite a URL that looks nothing like it, and Esri's labels layer is
+ * PNG again because it needs transparency. Declaring everything image/png
+ * leaves browsers to sniff their way out of it, which they mostly do - until
+ * one does not, and the map is blank for that user only.
+ */
+export function imageType(buf: Buffer): string {
+  return buf[0] === 0xff && buf[1] === 0xd8 ? 'image/jpeg' : 'image/png';
+}
+
 const MAX_ZOOM = 19;
 /** Tiles are effectively immutable; refetch monthly to pick up map edits. */
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -35,8 +86,18 @@ const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 export async function tileRoutes(app: FastifyInstance): Promise<void> {
   await fs.mkdir(CACHE_DIR, { recursive: true });
 
-  app.get('/api/tiles/:z/:x/:y.png', async (req, reply) => {
-    const { z, x, y } = req.params as { z: string; x: string; y: string };
+  /** Which basemaps the console may offer, so the UI does not hardcode them. */
+  app.get('/api/tiles/providers', async () => ({
+    default: DEFAULT_PROVIDER,
+    providers: Object.entries(PROVIDERS).map(([id, p]) => ({ id, attribution: p.attribution })),
+  }));
+
+  const serveTile = async (req: any, reply: any) => {
+    const { provider = DEFAULT_PROVIDER, z, x, y } = req.params as {
+      provider?: string; z: string; x: string; y: string;
+    };
+
+    if (!PROVIDERS[provider]) return reply.code(404).send({ error: 'unknown_tile_provider' });
 
     const zoom = Number(z);
     const tileX = Number(x);
@@ -57,12 +118,16 @@ export async function tileRoutes(app: FastifyInstance): Promise<void> {
 
     if (!valid) return reply.code(400).send({ error: 'invalid_tile' });
 
-    const file = path.join(CACHE_DIR, String(zoom), String(tileX), `${tileY}.png`);
+    // Cached per provider: the same z/x/y means a different image for each,
+    // and sharing one directory would serve satellite tiles to the street map.
+    // The .png suffix here is only a filename - the bytes may be JPEG, and the
+    // type sent to the browser is read back from them.
+    const file = path.join(CACHE_DIR, provider, String(zoom), String(tileX), `${tileY}.png`);
 
     const cached = await readIfFresh(file);
     if (cached) {
       return reply
-        .header('Content-Type', 'image/png')
+        .header('Content-Type', imageType(cached))
         .header('Cache-Control', 'public, max-age=604800')
         .header('X-Tile-Cache', 'hit')
         .send(cached);
@@ -70,7 +135,7 @@ export async function tileRoutes(app: FastifyInstance): Promise<void> {
 
     let upstream: Response;
     try {
-      upstream = await fetch(`${UPSTREAM}/${zoom}/${tileX}/${tileY}.png`, {
+      upstream = await fetch(upstreamUrl(provider, zoom, tileX, tileY)!, {
         headers: { 'User-Agent': USER_AGENT },
         signal: AbortSignal.timeout(10_000),
       });
@@ -79,7 +144,7 @@ export async function tileRoutes(app: FastifyInstance): Promise<void> {
       // Serve a stale tile rather than a hole in the map if we have one.
       const stale = await fs.readFile(file).catch(() => null);
       if (stale) {
-        return reply.header('Content-Type', 'image/png').header('X-Tile-Cache', 'stale').send(stale);
+        return reply.header('Content-Type', imageType(stale)).header('X-Tile-Cache', 'stale').send(stale);
       }
       return reply.code(502).send({ error: 'tile_upstream_unavailable' });
     }
@@ -99,11 +164,16 @@ export async function tileRoutes(app: FastifyInstance): Promise<void> {
     await fs.rename(tmp, file);
 
     return reply
-      .header('Content-Type', 'image/png')
+      .header('Content-Type', imageType(body))
       .header('Cache-Control', 'public, max-age=604800')
       .header('X-Tile-Cache', 'miss')
       .send(body);
-  });
+  };
+
+  // Provider-qualified, plus the original unqualified path kept as an alias so
+  // consoles cached in a browser from before this change keep working.
+  app.get('/api/tiles/:provider/:z/:x/:y.png', serveTile);
+  app.get('/api/tiles/:z/:x/:y.png', serveTile);
 }
 
 async function readIfFresh(file: string): Promise<Buffer | null> {

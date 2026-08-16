@@ -11,6 +11,9 @@ const state = {
   locations: [],
   selectedId: null,
   map: null,
+  // Cached from /api/config so the basemap can be rebuilt on switch without
+  // refetching it.
+  googleMapsApiKey: '',
   // Keep the selected vehicle centred as it drives. Without this the marker
   // wanders out of a static viewport and a moving truck looks stationary.
   follow: true,
@@ -245,19 +248,89 @@ $('map-theme').addEventListener('click', () => {
 // palette while Google's library downloads.
 document.documentElement.dataset.theme = mapTheme();
 
+/**
+ * Which basemap the operator chose, remembered across visits.
+ *
+ * Stored locally rather than server-side: it is a display preference, and
+ * different people at different screens reasonably want different answers.
+ * Defaults to Google when a key exists, since its Libyan street data is the
+ * reason it was chosen - falling back to imagery only if that key stops working.
+ */
+function chosenBasemap(hasGoogleKey) {
+  const saved = localStorage.getItem('zee.basemap');
+  if (saved === 'google' && !hasGoogleKey) return 'esri';
+  return saved || (hasGoogleKey ? 'google' : 'esri');
+}
+
 async function initMap() {
   if (state.map) return;
   const { googleMapsApiKey } = await api('/api/config');
+  state.googleMapsApiKey = googleMapsApiKey;
   const { createMap } = await import('/map.js');
   state.map = await createMap(
     document.getElementById('map'),
     googleMapsApiKey,
     selectDevice,
     mapTheme(),
+    chosenBasemap(googleMapsApiKey),
   );
   console.info(`[map] using ${state.map.provider}`);
   // Raster tiles cannot be restyled, so the button only exists for Google.
   renderThemeButton();
+  renderBasemapPicker();
+}
+
+/**
+ * Basemap picker.
+ *
+ * Rebuilding the map is the simplest correct way to switch: Google and
+ * MapLibre are different libraries with different DOM, so there is nothing to
+ * mutate in place. The selected vehicle is reapplied afterwards so the switch
+ * does not silently lose what the operator was looking at.
+ */
+async function renderBasemapPicker() {
+  const { availableBasemaps } = await import('/map.js');
+  const options = availableBasemaps(Boolean(state.googleMapsApiKey));
+  let host = document.getElementById('basemap-picker');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'basemap-picker';
+    host.className = 'basemap-picker';
+    document.getElementById('map').parentElement.appendChild(host);
+  }
+  host.innerHTML = '';
+  for (const opt of options) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = opt.label;
+    b.className = opt.id === state.map.provider ? 'active' : '';
+    b.addEventListener('click', () => switchBasemap(opt.id));
+    host.appendChild(b);
+  }
+}
+
+async function switchBasemap(provider) {
+  if (!state.map || state.map.provider === provider) return;
+  localStorage.setItem('zee.basemap', provider);
+
+  const previous = state.selectedId;
+  const container = document.getElementById('map');
+  container.innerHTML = '';
+  state.map = null;
+
+  const { createMap } = await import('/map.js');
+  state.map = await createMap(
+    container,
+    state.googleMapsApiKey,
+    selectDevice,
+    mapTheme(),
+    provider,
+  );
+  console.info(`[map] switched to ${state.map.provider}`);
+  renderThemeButton();
+  renderBasemapPicker();
+  syncMarkers();
+  if (previous) selectDevice(previous);
 }
 
 /**

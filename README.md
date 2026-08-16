@@ -126,6 +126,70 @@ Per device, before it goes on a truck:
 | `(P10,1,120)` | SMS alarm timezone offset: Libya is UTC+2. |
 | `(P94,1,3)` | Enable IMEI + fence ID in P45 reports. |
 
+## Integration API
+
+Read-only JSON for other systems to pull, so a partner platform - the Ministry
+fuel committee's Esri map among them - can plot the fleet alongside its own
+data without anyone being issued a console login.
+
+Issue a token on the server:
+
+```bash
+sudo -u zee node --env-file=.env scripts/create-api-token.ts "Ministry fuel committee"
+```
+
+It prints the token **once**; only its SHA-256 is stored, so a copy of the
+database does not hand over working credentials.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v1/vehicles` | Current state of every active vehicle, as JSON |
+| `GET /api/v1/vehicles.geojson` | The same, as a GeoJSON FeatureCollection |
+| `GET /api/v1/ping` | Confirms a token works, before wiring anything up |
+
+```bash
+curl -H "Authorization: Bearer <token>" https://<host>/api/v1/vehicles.geojson
+```
+
+The GeoJSON form loads straight into Esri or Leaflet with no transformation.
+Vehicles without a GPS fix are returned with a `null` geometry rather than
+dropped, so a partner can tell "present but unlocatable" from "no longer in
+the fleet".
+
+Three properties of this API are deliberate and should stay that way:
+
+- **Read only.** No unlock, no configuration, no write of any kind is
+  reachable. A leaked token costs visibility, never control of a lock.
+- **An explicit field allowlist**, not the console's projection - which carries
+  SIM numbers and a flag for whether a lock still has its factory password.
+- **Tokens separate from the operator password**, so a partner's access can be
+  revoked without changing the password drivers use.
+
+Revoke with `UPDATE api_tokens SET is_active = false WHERE name = '...';`, and
+see `last_used_at` / `request_count` in that table for who is actually calling.
+
+## Basemaps
+
+Three, chosen per operator from the picker on the map and remembered locally:
+
+| Provider | Notes |
+|---|---|
+| **Google** | Best Libyan street data. Needs an API key and a billing account. |
+| **Esri** | Satellite imagery, free, no key. Paired with Esri's transparent places layer, or it is unreadable. |
+| **OpenStreetMap** | Free, no key. Place names for Libya are dated. |
+
+All raster tiles are proxied through `/api/tiles/<provider>/{z}/{x}/{y}.png`
+and cached on disk, because tile hosts are not reliably reachable from Libya.
+Note that providers disagree about tile URLs - OSM is `{z}/{x}/{y}.png`, Esri
+is `{z}/{y}/{x}` with no extension and returns **JPEG** - so the proxy holds a
+template per provider and reads the content type back from the bytes. Swapping
+only the hostname fetches transposed tiles: a map that renders perfectly and
+shows the wrong part of the world.
+
+Set the default with `TILE_PROVIDER` in `.env`. Google is used only when a key
+is configured; if it fails to load, the map falls back to Esri imagery rather
+than to a blank panel.
+
 ## Evaluation period
 
 The platform can run for a fixed, agreed pilot period, after which continued

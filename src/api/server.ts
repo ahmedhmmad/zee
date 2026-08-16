@@ -15,6 +15,7 @@ import fastifyWebsocket from '@fastify/websocket';
 import fastifyCookie from '@fastify/cookie';
 import { pool, createListener } from '../db.ts';
 import { apiRoutes } from './routes.ts';
+import { integrationRoutes } from './integration.ts';
 import { apiConfig } from './config.ts';
 import { fetchDevice } from './devices-query.ts';
 import { evaluationPeriod } from '../evaluation.ts';
@@ -162,6 +163,11 @@ function pushDeviceUpdate(kind: string, deviceId: string): void {
     }, PUSH_COALESCE_MS).unref(),
   );
 }
+
+// A sibling of apiRoutes, never inside it: registering here keeps it clear of
+// that plugin's session-cookie hook, since these callers are other systems
+// holding a bearer token rather than browsers holding a cookie.
+await app.register(integrationRoutes);
 
 await app.register(apiRoutes);
 

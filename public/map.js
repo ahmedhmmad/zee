@@ -323,25 +323,49 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
   };
 }
 
-// --- OpenStreetMap fallback ------------------------------------------------
+// --- Raster basemaps (OpenStreetMap, Esri) ---------------------------------
 
-function createOsmMap(container, onMarkerClick) {
+/**
+ * Raster providers the console can offer, all proxied through our own origin.
+ *
+ * Proxied rather than fetched directly because tile hosts are not reliably
+ * reachable from Libya, and the server-side cache keeps the map alive when an
+ * upstream is down.
+ *
+ * Esri is imagery only, with no names baked in, so it is paired with Esri's
+ * transparent places layer on top - otherwise the map is beautiful and
+ * unreadable, and you cannot tell one fuel depot from the next.
+ */
+const RASTER_BASEMAPS = {
+  osm: {
+    label: 'خريطة الشوارع',
+    tiles: ['osm'],
+    attribution: '© OpenStreetMap',
+  },
+  esri: {
+    label: 'قمر صناعي',
+    tiles: ['esri', 'esri-labels'],
+    attribution: 'Esri, Maxar',
+  },
+};
+
+function createOsmMap(container, onMarkerClick, basemap = 'osm') {
+  const spec = RASTER_BASEMAPS[basemap] ?? RASTER_BASEMAPS.osm;
+  const sources = {};
+  const layers = [];
+  for (const id of spec.tiles) {
+    sources[id] = {
+      type: 'raster',
+      tiles: [`${location.origin}/api/tiles/${id}/{z}/{x}/{y}.png`],
+      tileSize: 256,
+      attribution: spec.attribution,
+    };
+    layers.push({ id, type: 'raster', source: id });
+  }
+
   const map = new maplibregl.Map({
     container,
-    style: {
-      version: 8,
-      sources: {
-        osm: {
-          type: 'raster',
-          // Proxied through our own origin: OSM is not reliably reachable
-          // from Libya, and the cache keeps the map alive if it goes down.
-          tiles: [`${location.origin}/api/tiles/{z}/{x}/{y}.png`],
-          tileSize: 256,
-          attribution: '© OpenStreetMap',
-        },
-      },
-      layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
-    },
+    style: { version: 8, sources, layers },
     center: [TRIPOLI.lng, TRIPOLI.lat],
     zoom: 11,
     minZoom: 5,
@@ -358,7 +382,7 @@ function createOsmMap(container, onMarkerClick) {
   const markers = new Map();
 
   return {
-    provider: 'osm',
+    provider: basemap,
     // Raster labels and colours are baked into the tile images, so there is
     // nothing to restyle. The toggle hides itself rather than doing nothing.
     supportsTheme: false,
@@ -517,16 +541,32 @@ function createOsmMap(container, onMarkerClick) {
   };
 }
 
-/** Google when a key is configured, OpenStreetMap otherwise. */
-export async function createMap(container, apiKey, onMarkerClick, theme = 'dark') {
-  if (apiKey) {
+/**
+ * Build the map for the requested provider.
+ *
+ * `provider` is 'google', 'esri' or 'osm'. Google is used only when a key is
+ * configured and only when actually asked for; anything else, or a Google that
+ * fails to load, falls through to a raster basemap. A billing problem or an
+ * invalid key must degrade to a working map rather than to a blank panel -
+ * which is exactly what an expired key produced in Tripoli.
+ */
+export async function createMap(container, apiKey, onMarkerClick, theme = 'dark', provider = 'google') {
+  if (provider === 'google' && apiKey) {
     try {
       return await createGoogleMap(container, apiKey, onMarkerClick, theme);
     } catch (err) {
-      // A billing problem or an unreachable Google should degrade to a working
-      // map, not to a blank panel.
-      console.error('[map] Google Maps failed, falling back to OpenStreetMap', err);
+      console.error('[map] Google Maps failed, falling back to Esri imagery', err);
+      return createOsmMap(container, onMarkerClick, 'esri');
     }
   }
-  return createOsmMap(container, onMarkerClick);
+  return createOsmMap(container, onMarkerClick, provider === 'esri' ? 'esri' : 'osm');
+}
+
+/** Basemap choices the UI offers, so it does not hardcode the list. */
+export function availableBasemaps(hasGoogleKey) {
+  return [
+    ...(hasGoogleKey ? [{ id: 'google', label: 'جوجل' }] : []),
+    { id: 'esri', label: RASTER_BASEMAPS.esri.label },
+    { id: 'osm', label: RASTER_BASEMAPS.osm.label },
+  ];
 }

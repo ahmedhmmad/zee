@@ -543,3 +543,37 @@ select {
 
 /* Password read result, shown where the read was requested. */
 .dev-pw { margin-block-start: .4rem; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+
+/* --- Basemap picker -------------------------------------------------------
+   Sits over the map, mirrored to the inline-start edge so it does not collide
+   with the map library's own controls, which all sit top-left. */
+.basemap-picker {
+  position: absolute;
+  inset-block-start: 0.75rem;
+  inset-inline-end: 0.75rem;
+  z-index: 5;
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border-radius: 0.6rem;
+  background: var(--surface, #fff);
+  box-shadow: 0 1px 6px rgb(0 0 0 / 0.25);
+}
+
+.basemap-picker button {
+  padding: 0.35rem 0.75rem;
+  border: 0;
+  border-radius: 0.45rem;
+  background: transparent;
+  color: var(--text, #111);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.basemap-picker button:hover { background: var(--surface-2, #f0f0f0); }
+
+.basemap-picker button.active {
+  background: var(--accent, #1b7f5a);
+  color: #fff;
+}
