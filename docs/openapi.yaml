@@ -1,0 +1,254 @@
+openapi: 3.0.3
+
+# Read-only integration API for the truck lock platform.
+#
+# Import this file into Apidog, Postman or Insomnia to get every endpoint with
+# authentication already wired up. It also serves as the specification handed
+# to a partner integrating against the feed.
+#
+# Everything here is read-only. There is no unlock, no configuration and no
+# write of any kind reachable with an integration token: a leaked token costs
+# visibility, never control of a lock on a fuel tanker.
+
+info:
+  title: Zee Lock Platform — Integration API
+  version: '1.0'
+  description: |
+    Current position and status of every active vehicle, for other systems to
+    pull on a schedule.
+
+    **Authentication.** Every request needs a bearer token:
+
+        Authorization: Bearer <token>
+
+    Tokens are issued on the server and shown once:
+
+        sudo -u zee node --env-file=/home/zee/app/.env \
+             /home/zee/app/scripts/create-api-token.ts "Partner name"
+
+    Only the SHA-256 of a token is stored, so a lost token cannot be recovered
+    — revoke it and issue another. Tokens are separate from the operator
+    console password, so revoking a partner never disrupts the operators.
+
+    **Polling.** Locks report roughly every 60 seconds while awake and sleep
+    for up to 30 minutes between wakes, so polling faster than once a minute
+    returns the same data. Once a minute is plenty.
+
+    **Coordinates.** `vehicles.geojson` follows RFC 7946: coordinates are
+    `[longitude, latitude]`, longitude first. Reversed, Tripoli plots off the
+    coast of Somalia.
+
+servers:
+  - url: http://89.168.126.122
+    description: Oracle test server (plain HTTP — no certificate on a bare IP)
+  - url: https://locks.ahmedhammad.page
+    description: Production, once a hostname and certificate are in place
+
+security:
+  - bearerAuth: []
+
+paths:
+  /api/v1/ping:
+    get:
+      summary: Verify a token works
+      description: |
+        Cheapest possible check that a token is valid and the platform is up.
+        Worth calling first when setting up an integration — it separates "the
+        token is wrong" from "the query is wrong".
+      responses:
+        '200':
+          description: Token is valid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  token:
+                    type: string
+                    nullable: true
+                    description: The name this token was issued under.
+                    example: Ministry fuel committee
+                  serverTime:
+                    type: string
+                    format: date-time
+        '401':
+          $ref: '#/components/responses/Unauthorised'
+
+  /api/v1/vehicles:
+    get:
+      summary: All active vehicles, as JSON
+      responses:
+        '200':
+          description: Current state of every active vehicle
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  generatedAt:
+                    type: string
+                    format: date-time
+                  count:
+                    type: integer
+                    example: 2
+                  vehicles:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Vehicle'
+        '401':
+          $ref: '#/components/responses/Unauthorised'
+
+  /api/v1/vehicles.geojson:
+    get:
+      summary: All active vehicles, as GeoJSON
+      description: |
+        The same data as an RFC 7946 FeatureCollection, so a map client can
+        load it directly with no transformation.
+
+        A vehicle with no GPS fix is returned with `geometry: null` rather than
+        being omitted — it is still part of the fleet, and dropping it silently
+        would read as the vehicle having been removed.
+      responses:
+        '200':
+          description: FeatureCollection of vehicle positions
+          content:
+            application/geo+json:
+              schema:
+                $ref: '#/components/schemas/FeatureCollection'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureCollection'
+        '401':
+          $ref: '#/components/responses/Unauthorised'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: The token issued by scripts/create-api-token.ts
+
+  responses:
+    Unauthorised:
+      description: Token missing, malformed, unknown or revoked
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: unauthorised
+              hint:
+                type: string
+                example: 'send: Authorization: Bearer <token>'
+
+  schemas:
+    Vehicle:
+      type: object
+      properties:
+        deviceId:
+          type: string
+          description: Ten-digit lock identifier, printed on the unit's label.
+          example: '8055430364'
+        name:
+          type: string
+          example: Truck 1
+        plateNumber:
+          type: string
+          nullable: true
+          example: TRP-001
+        latitude:
+          type: number
+          format: double
+          nullable: true
+          description: Null when the lock has no GPS fix.
+          example: 32.8872
+        longitude:
+          type: number
+          format: double
+          nullable: true
+          example: 13.1913
+        positioned:
+          type: boolean
+          description: |
+            Whether latitude/longitude are present. Stated explicitly so a
+            consumer never has to infer "no fix" from a missing field.
+          example: true
+        speedKph:
+          type: number
+          format: double
+          nullable: true
+          example: 43
+        headingDeg:
+          type: integer
+          nullable: true
+          description: Degrees clockwise from north, 0–359.
+          example: 124
+        batteryPercent:
+          type: integer
+          nullable: true
+          example: 87
+        locked:
+          type: boolean
+          nullable: true
+          description: True when the lock's motor is engaged.
+          example: true
+        mileageKm:
+          type: integer
+          nullable: true
+          description: The device's own odometer. Monotonic, resets only on hardware replacement.
+          example: 1210
+        online:
+          type: boolean
+          description: |
+            Whether a TCP session is open right now. Usually false: these locks
+            sleep between reports, so offline is the normal resting state and
+            does not mean the vehicle is unreachable.
+          example: false
+        lastSeenAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Last contact of any kind.
+        lastPositionAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Last contact that carried a position.
+
+    FeatureCollection:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [FeatureCollection]
+        features:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                enum: [Feature]
+              geometry:
+                type: object
+                nullable: true
+                description: Null when the vehicle has no GPS fix.
+                properties:
+                  type:
+                    type: string
+                    enum: [Point]
+                  coordinates:
+                    type: array
+                    description: '[longitude, latitude] — longitude first, per RFC 7946.'
+                    items:
+                      type: number
+                    minItems: 2
+                    maxItems: 2
+                    example: [13.1913, 32.8872]
+              properties:
+                $ref: '#/components/schemas/Vehicle'

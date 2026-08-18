@@ -170,6 +170,7 @@ EMAIL=""
 [ $IS_IP -eq 1 ] || ask EMAIL "Email for certificate notices" "eng.ahammad7@gmail.com"
 ask_secret AUTH_PASSWORD "Console login password (you will use this to sign in)"
 ask GMAPS_KEY  "Google Maps API key (blank to use OpenStreetMap)" ""
+ask ARCGIS_KEY "ArcGIS API key from the client's Esri licence (blank to skip)" ""
 ask DUMP_FILE  "Path to database dump from the old server (blank for empty DB)" ""
 
 # Evaluation period. A disclosed pilot term, not a hidden switch: after this
@@ -317,7 +318,13 @@ info "Restore      ${DUMP_FILE:-none — starting with an empty database}"
 # so both halves fire and the value is appended to the label. Here that printed
 # the Google Maps key to the terminal in a script whose whole premise is that
 # secrets are never displayed.
-if [ -n "$GMAPS_KEY" ]; then info "Maps         Google"; else info "Maps         OpenStreetMap"; fi
+if [ -n "$ARCGIS_KEY" ]; then
+  info "Maps         Esri/ArcGIS (licensed)$([ -n "$GMAPS_KEY" ] && echo ", Google also available")"
+elif [ -n "$GMAPS_KEY" ]; then
+  info "Maps         Google"
+else
+  info "Maps         OpenStreetMap"
+fi
 if [ -n "$EVALUATION_EXPIRES_AT" ]; then
   info "Evaluation   ends $EVALUATION_EXPIRES_AT"
 else
@@ -422,6 +429,8 @@ COOKIE_SECRET=$COOKIE_SECRET
 LOG_LEVEL=info
 TILE_CACHE_DIR=$APP_DIR/.cache/tiles
 GOOGLE_MAPS_API_KEY=$GMAPS_KEY
+ARCGIS_API_KEY=$ARCGIS_KEY
+ARCGIS_VERSION=4.31
 
 # Evaluation period (disclosed pilot term). After this date the platform stops
 # serving until the date is updated and the services restarted. Blank = no
@@ -475,7 +484,12 @@ for unit in zee-gateway zee-api; do
     "$APP_DIR/deploy/$unit.service" > "/etc/systemd/system/$unit.service"
 done
 systemctl daemon-reload
-systemctl enable zee-gateway zee-api >/dev/null 2>&1
+# Only stdout is discarded, never stderr. Silencing both here meant an enable
+# failure passed unnoticed: the restart below starts the services for this
+# session, is-active then passes, and the install reports success - but nothing
+# comes back after a power cycle. On a desktop machine that is every night.
+systemctl enable zee-gateway zee-api >/dev/null \
+  || die "could not enable the services at boot — they would not survive a reboot"
 # restart, not "enable --now": a re-run rotates the database password and
 # rewrites .env, but --now leaves an already-running service holding the
 # credentials it loaded at first start, which then fails to authenticate.
@@ -520,8 +534,19 @@ EOF
 ln -sf /etc/nginx/sites-available/zee /etc/nginx/sites-enabled/zee
 rm -f /etc/nginx/sites-enabled/default
 nginx -t >/dev/null 2>&1 || die "nginx configuration is invalid"
-systemctl reload nginx
-ok "nginx proxying $DOMAIN to the application"
+# reload only refreshes an already-running nginx and quietly does nothing
+# useful if it is stopped, so start it explicitly and enable it at boot.
+systemctl enable nginx >/dev/null || warn "could not enable nginx at boot"
+systemctl restart nginx
+systemctl is-active --quiet nginx || die "nginx is not running: journalctl -u nginx -n 30"
+
+# Prove the console is actually answering rather than trusting that three
+# services came up. This is the check that was missing: an install can pass
+# every other step and still leave nothing listening on 80, which looks to the
+# operator like the whole platform was never installed.
+sleep 1
+ss -lntH 'sport = :80' | grep -q . || die "nothing is listening on port 80 — the console would be unreachable"
+ok "nginx proxying $DOMAIN to the application, listening on port 80"
 
 if [ $IS_IP -eq 1 ]; then
   warn "reached by IP, so the console is plain HTTP — fine for testing, but the"

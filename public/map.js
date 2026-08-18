@@ -550,7 +550,34 @@ function createOsmMap(container, onMarkerClick, basemap = 'osm') {
  * invalid key must degrade to a working map rather than to a blank panel -
  * which is exactly what an expired key produced in Tripoli.
  */
-export async function createMap(container, apiKey, onMarkerClick, theme = 'dark', provider = 'google') {
+export async function createMap(
+  container,
+  apiKey,
+  onMarkerClick,
+  theme = 'dark',
+  provider = 'google',
+  arcgis = null,
+) {
+  if (provider === 'arcgis') {
+    try {
+      // Imported on demand: the ArcGIS SDK is large, and an operator who
+      // never selects it should not pay to download it.
+      const { createArcgisMap } = await import('/map-arcgis.js');
+      return await createArcgisMap(
+        container,
+        arcgis?.apiKey ?? '',
+        onMarkerClick,
+        theme,
+        arcgis?.version || '4.31',
+      );
+    } catch (err) {
+      // Esri's CDN unreachable, a rejected key, or a retired SDK version. Fall
+      // back to imagery rather than to a blank panel: a dispatcher needs to
+      // see where the trucks are more than they need the licensed basemap.
+      console.error('[map] ArcGIS failed, falling back to Esri imagery', err);
+      return createOsmMap(container, onMarkerClick, 'esri');
+    }
+  }
   if (provider === 'google' && apiKey) {
     try {
       return await createGoogleMap(container, apiKey, onMarkerClick, theme);
@@ -562,9 +589,15 @@ export async function createMap(container, apiKey, onMarkerClick, theme = 'dark'
   return createOsmMap(container, onMarkerClick, provider === 'esri' ? 'esri' : 'osm');
 }
 
-/** Basemap choices the UI offers, so it does not hardcode the list. */
-export function availableBasemaps(hasGoogleKey) {
+/**
+ * Basemap choices the UI offers, so it does not hardcode the list.
+ *
+ * ArcGIS is listed first when licensed: it is the client's own basemap, and
+ * the one they expect to be looking at.
+ */
+export function availableBasemaps(hasGoogleKey, hasArcgisKey = false) {
   return [
+    ...(hasArcgisKey ? [{ id: 'arcgis', label: 'إيسري' }] : []),
     ...(hasGoogleKey ? [{ id: 'google', label: 'جوجل' }] : []),
     { id: 'esri', label: RASTER_BASEMAPS.esri.label },
     { id: 'osm', label: RASTER_BASEMAPS.osm.label },

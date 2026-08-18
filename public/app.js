@@ -14,6 +14,8 @@ const state = {
   // Cached from /api/config so the basemap can be rebuilt on switch without
   // refetching it.
   googleMapsApiKey: '',
+  arcgisApiKey: '',
+  arcgisVersion: '',
   // Keep the selected vehicle centred as it drives. Without this the marker
   // wanders out of a static viewport and a moving truck looks stationary.
   follow: true,
@@ -256,23 +258,32 @@ document.documentElement.dataset.theme = mapTheme();
  * Defaults to Google when a key exists, since its Libyan street data is the
  * reason it was chosen - falling back to imagery only if that key stops working.
  */
-function chosenBasemap(hasGoogleKey) {
+function chosenBasemap(hasGoogleKey, hasArcgisKey = false) {
   const saved = localStorage.getItem('zee.basemap');
-  if (saved === 'google' && !hasGoogleKey) return 'esri';
-  return saved || (hasGoogleKey ? 'google' : 'esri');
+  // A saved choice whose key has since been removed would leave the operator
+  // staring at a blank panel, so fall through to imagery instead.
+  if (saved === 'google' && !hasGoogleKey) return hasArcgisKey ? 'arcgis' : 'esri';
+  if (saved === 'arcgis' && !hasArcgisKey) return hasGoogleKey ? 'google' : 'esri';
+  if (saved) return saved;
+  // ArcGIS first when licensed: it is the client's own basemap and the one
+  // they expect to see.
+  return hasArcgisKey ? 'arcgis' : hasGoogleKey ? 'google' : 'esri';
 }
 
 async function initMap() {
   if (state.map) return;
-  const { googleMapsApiKey } = await api('/api/config');
+  const { googleMapsApiKey, arcgisApiKey, arcgisVersion } = await api('/api/config');
   state.googleMapsApiKey = googleMapsApiKey;
+  state.arcgisApiKey = arcgisApiKey;
+  state.arcgisVersion = arcgisVersion;
   const { createMap } = await import('/map.js');
   state.map = await createMap(
     document.getElementById('map'),
     googleMapsApiKey,
     selectDevice,
     mapTheme(),
-    chosenBasemap(googleMapsApiKey),
+    chosenBasemap(googleMapsApiKey, arcgisApiKey),
+    { apiKey: arcgisApiKey, version: arcgisVersion },
   );
   console.info(`[map] using ${state.map.provider}`);
   // Raster tiles cannot be restyled, so the button only exists for Google.
@@ -290,7 +301,10 @@ async function initMap() {
  */
 async function renderBasemapPicker() {
   const { availableBasemaps } = await import('/map.js');
-  const options = availableBasemaps(Boolean(state.googleMapsApiKey));
+  const options = availableBasemaps(
+    Boolean(state.googleMapsApiKey),
+    Boolean(state.arcgisApiKey),
+  );
   let host = document.getElementById('basemap-picker');
   if (!host) {
     host = document.createElement('div');
@@ -325,6 +339,7 @@ async function switchBasemap(provider) {
     selectDevice,
     mapTheme(),
     provider,
+    { apiKey: state.arcgisApiKey, version: state.arcgisVersion },
   );
   console.info(`[map] switched to ${state.map.provider}`);
   renderThemeButton();
@@ -1619,9 +1634,18 @@ async function openHistory() {
   // Its own map instance: past travel is a review activity, and drawing it on
   // the live map buried the present under the past.
   if (!historyMap) {
-    const { googleMapsApiKey } = await api('/api/config');
+    const { googleMapsApiKey, arcgisApiKey, arcgisVersion } = await api('/api/config');
     const { createMap } = await import('/map.js');
-    historyMap = await createMap($('history-map'), googleMapsApiKey, () => {}, mapTheme());
+    // Follows the same basemap the operator chose on the live map, so the
+    // history view does not silently show a different world.
+    historyMap = await createMap(
+      $('history-map'),
+      googleMapsApiKey,
+      () => {},
+      mapTheme(),
+      chosenBasemap(googleMapsApiKey, arcgisApiKey),
+      { apiKey: arcgisApiKey, version: arcgisVersion },
+    );
   }
   loadHistory();
 }

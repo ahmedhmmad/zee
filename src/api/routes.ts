@@ -61,6 +61,8 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
   /** Front-end configuration. Behind the session check, like everything else. */
   app.get('/api/config', async () => ({
     googleMapsApiKey: apiConfig.googleMapsApiKey || null,
+    arcgisApiKey: apiConfig.arcgisApiKey || null,
+    arcgisVersion: apiConfig.arcgisVersion,
   }));
 
   app.get('/api/devices', async () => fetchDevices());

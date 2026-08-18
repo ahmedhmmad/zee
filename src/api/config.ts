@@ -36,6 +36,27 @@ export const apiConfig = {
    */
   googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY ?? '',
 
+  /**
+   * ArcGIS Maps SDK key, from the client's own Esri licence.
+   *
+   * Like the Google key this is a browser key and therefore public by nature:
+   * it is sent to every console that loads the map. Restrict it in the ArcGIS
+   * Location Platform console by referrer, and note that Esri keys carry
+   * per-service scopes - a key without the basemap scope authenticates fine
+   * and then serves no tiles, which looks like a broken map rather than a
+   * misconfigured key.
+   */
+  arcgisApiKey: process.env.ARCGIS_API_KEY ?? '',
+
+  /**
+   * Which SDK release to load from Esri's CDN.
+   *
+   * Configurable because Esri retires CDN versions on their own schedule, and
+   * when one goes the console breaks for everyone at once. Bumping an .env
+   * value and restarting is a five-minute fix; a code release is not.
+   */
+  arcgisVersion: process.env.ARCGIS_VERSION || '4.31',
+
   port: Number(process.env.API_PORT ?? 3333),
   // Bind loopback only: Nginx is the sole ingress, so the app must not be
   // reachable directly even if a firewall rule is wrong.
