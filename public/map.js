@@ -371,11 +371,16 @@ const RASTER_BASEMAPS = {
   },
   esri: {
     label: 'قمر صناعي',
-    // Three layers, in draw order: imagery, then street names, then place and
-    // boundary names on top. Imagery alone carries no labels at all, and the
-    // boundaries layer by itself is nearly empty at city zoom - the streets
-    // come from World_Transportation.
-    tiles: ['esri', 'esri-transport', 'esri-labels'],
+    // Imagery plus street names. Two layers, not three: every extra raster
+    // layer multiplies the tile requests for one view, and a third was enough
+    // for Chrome to start refusing them outright with ERR_INSUFFICIENT_RESOURCES
+    // while the proxy was still fetching the first ones from Esri.
+    //
+    // World_Transportation is the one worth having. The boundaries layer it
+    // replaces returned about 2.6 KB per tile over Tripoli against 16 KB here,
+    // because it carries administrative lines and major settlement names
+    // rather than the streets an operator actually navigates by.
+    tiles: ['esri', 'esri-transport'],
     attribution: 'Esri, Maxar',
   },
 };
@@ -393,6 +398,14 @@ function createOsmMap(container, onMarkerClick, basemap = 'osm') {
     };
     layers.push({ id, type: 'raster', source: id });
   }
+
+  // MapLibre defaults to 16 tile fetches in flight, which assumes a CDN that
+  // answers immediately. Ours is a proxy that may be fetching from Esri on a
+  // cache miss, so those requests sit open for hundreds of milliseconds each
+  // and, across two layers, pile up until Chrome refuses new connections with
+  // ERR_INSUFFICIENT_RESOURCES and the map comes up half-drawn. Fewer in
+  // flight is slower on a cold cache and reliable instead of failing.
+  if (maplibregl.config) maplibregl.config.MAX_PARALLEL_IMAGE_REQUESTS = 8;
 
   const map = new maplibregl.Map({
     container,
