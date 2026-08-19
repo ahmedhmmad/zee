@@ -240,7 +240,7 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
             icon: {
               path: google.maps.SymbolPath.BACKWARD_CLOSED_ARROW,
               scale: 5,
-              fillColor: '#d9922b',
+              fillColor: rideColour(id),
               fillOpacity: 1,
               strokeColor: '#ffffff',
               strokeWeight: 1.5,
@@ -251,15 +251,17 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
             map,
             center: { lat, lng: lon },
             radius: radiusM,
-            strokeColor: '#d9922b',
+            // One colour per ride, shared with the other basemaps so a route
+            // is recognisably the same route whichever map is on screen.
+            strokeColor: rideColour(id),
             strokeOpacity: 0.8,
             strokeWeight: 1.5,
-            fillColor: '#d9922b',
+            fillColor: rideColour(id),
             fillOpacity: 0.12,
           }),
           line: new google.maps.Polyline({
             map,
-            strokeColor: '#d9922b',
+            strokeColor: rideColour(id),
             strokeOpacity: 0,
             // Dashed, so it reads as "distance to go" rather than a route.
             icons: [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 0.7, scale: 3 }, offset: '0', repeat: '12px' }],
@@ -357,6 +359,57 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
   };
 }
 
+/**
+ * A stable colour per ride.
+ *
+ * Hashed from the arrival's id rather than drawn at random each time, so a
+ * route keeps its colour across refreshes and basemap switches - a line that
+ * changed colour on every redraw would suggest something about the ride had
+ * changed. Hue only: saturation and lightness are fixed so every ride stays
+ * legible over both satellite imagery and a pale street map, which random RGB
+ * does not guarantee.
+ */
+export function rideColour(seed) {
+  const text = String(seed ?? '');
+  let hash = 0;
+  for (let i = 0; i < text.length; i++) hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+  return `hsl(${hash % 360}, 70%, 55%)`;
+}
+
+/**
+ * Road route between two points, from Esri's World Route service.
+ *
+ * Used only when the client's ArcGIS key is configured. Google's Directions
+ * results may only be drawn on a Google map, so their route cannot be reused
+ * here - and this is the client's own licensed service, which is the reason to
+ * prefer it over a third party.
+ *
+ * Consumes ArcGIS credits per request, so callers run it once when a
+ * destination is set rather than on every position update.
+ *
+ * Returns [[lon, lat], ...] or null. The caller keeps the straight line it has
+ * already drawn if this fails: a missing route must not take the destination
+ * off the map with it.
+ */
+async function fetchEsriRoute(apiKey, from, to) {
+  const url = new URL(
+    'https://route-api.arcgis.com/arcgis/rest/services/World/Route/NAServer/Route_World/solve',
+  );
+  url.searchParams.set('f', 'json');
+  url.searchParams.set('token', apiKey);
+  url.searchParams.set('stops', `${from.lon},${from.lat};${to.lon},${to.lat}`);
+  url.searchParams.set('returnRoutes', 'true');
+  url.searchParams.set('returnDirections', 'false');
+  url.searchParams.set('outSR', '4326');
+
+  const res = await fetch(url);
+  const json = await res.json();
+  // Esri answers 200 with an error object rather than an HTTP error status, so
+  // res.ok alone would report success on a rejected key.
+  if (json?.error) throw new Error(json.error.message ?? 'esri route failed');
+  return json?.routes?.features?.[0]?.geometry?.paths?.[0] ?? null;
+}
+
 // --- Raster basemaps (OpenStreetMap, Esri) ---------------------------------
 
 /**
@@ -392,7 +445,7 @@ const RASTER_BASEMAPS = {
   },
 };
 
-function createOsmMap(container, onMarkerClick, basemap = 'osm') {
+function createOsmMap(container, onMarkerClick, basemap = 'osm', arcgisKey = '') {
   const spec = RASTER_BASEMAPS[basemap] ?? RASTER_BASEMAPS.osm;
   const sources = {};
   const layers = [];
@@ -431,6 +484,62 @@ function createOsmMap(container, onMarkerClick, basemap = 'osm') {
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-left');
 
   const markers = new Map();
+
+  /** ride id -> its GeoJSON features (geofence ring, and the path to it). */
+  const destinations = new Map();
+
+  /**
+   * Redraw every armed ride from one source.
+   *
+   * Colour comes from each feature's own `colour` property rather than from
+   * the layer, which is what allows one source and one pair of layers to draw
+   * any number of rides in different colours.
+   */
+  function renderDestinations() {
+    const data = {
+      type: 'FeatureCollection',
+      features: [...destinations.values()].flat(),
+    };
+
+    const apply = () => {
+      if (map.getSource('destinations')) {
+        map.getSource('destinations').setData(data);
+        return;
+      }
+      map.addSource('destinations', { type: 'geojson', data });
+      map.addLayer({
+        id: 'destination-fill',
+        type: 'fill',
+        source: 'destinations',
+        filter: ['==', ['geometry-type'], 'Polygon'],
+        paint: { 'fill-color': ['get', 'colour'], 'fill-opacity': 0.12 },
+      });
+      map.addLayer({
+        id: 'destination-ring',
+        type: 'line',
+        source: 'destinations',
+        filter: ['==', ['geometry-type'], 'Polygon'],
+        paint: {
+          'line-color': ['get', 'colour'],
+          'line-width': 1.5,
+          'line-dasharray': [2, 2],
+        },
+      });
+      // The path to the destination, drawn solid and heavier than the
+      // geofence outline so the two do not read as the same thing.
+      map.addLayer({
+        id: 'destination-route',
+        type: 'line',
+        source: 'destinations',
+        filter: ['==', ['geometry-type'], 'LineString'],
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': ['get', 'colour'], 'line-width': 3.5, 'line-opacity': 0.85 },
+      });
+    };
+
+    // Sources cannot be added before the style has loaded.
+    map.isStyleLoaded() ? apply() : map.once('load', apply);
+  }
 
   return {
     provider: basemap,
@@ -495,7 +604,18 @@ function createOsmMap(container, onMarkerClick, basemap = 'osm') {
      * MapLibre has no circle geometry, so approximate one as a polygon. 64
      * points is indistinguishable from a circle at any zoom an operator uses.
      */
-    setDestination(id, lat, lon, { radiusM, from }) {
+    /**
+     * A ride's destination: the geofence it will unlock inside, and the path
+     * to it from where the vehicle is now.
+     *
+     * Rides accumulate rather than replace. Each call used to overwrite the
+     * whole source, so with two arrivals armed only the last one was ever
+     * drawn. Each ride now keeps its own colour, which is what makes several
+     * on screen at once readable.
+     */
+    setDestination(id, lat, lon, { radiusM = 100, from } = {}) {
+      const colour = rideColour(id);
+
       const ring = [];
       for (let i = 0; i <= 64; i++) {
         const angle = (i / 64) * 2 * Math.PI;
@@ -504,42 +624,44 @@ function createOsmMap(container, onMarkerClick, basemap = 'osm') {
         ring.push([lon + dLon, lat + dLat]);
       }
 
-      const data = {
-        type: 'FeatureCollection',
-        features: [
-          { type: 'Feature', geometry: { type: 'Polygon', coordinates: [ring] } },
-          ...(from
-            ? [{
-                type: 'Feature',
-                geometry: { type: 'LineString', coordinates: [[from.lon, from.lat], [lon, lat]] },
-              }]
-            : []),
-        ],
-      };
-
-      if (map.getSource('destinations')) {
-        map.getSource('destinations').setData(data);
-        return;
+      const features = [
+        {
+          type: 'Feature',
+          properties: { colour },
+          geometry: { type: 'Polygon', coordinates: [ring] },
+        },
+      ];
+      if (from) {
+        features.push({
+          type: 'Feature',
+          properties: { colour },
+          geometry: { type: 'LineString', coordinates: [[from.lon, from.lat], [lon, lat]] },
+        });
       }
-      map.addSource('destinations', { type: 'geojson', data });
-      map.addLayer({
-        id: 'destination-fill',
-        type: 'fill',
-        source: 'destinations',
-        filter: ['==', ['geometry-type'], 'Polygon'],
-        paint: { 'fill-color': '#d9922b', 'fill-opacity': 0.12 },
-      });
-      map.addLayer({
-        id: 'destination-line',
-        type: 'line',
-        source: 'destinations',
-        paint: { 'line-color': '#d9922b', 'line-width': 1.5, 'line-dasharray': [2, 2] },
-      });
+      destinations.set(id, features);
+      renderDestinations();
+
+      // Upgrade the straight line to a real road route when the client's Esri
+      // licence is configured. Deliberately not awaited: the straight line is
+      // already drawn and is a correct answer on its own, so if routing fails
+      // - no routing scope on the key, no credits, no network - the line just
+      // stays straight rather than the destination vanishing.
+      if (arcgisKey && from) {
+        fetchEsriRoute(arcgisKey, from, { lat, lon })
+          .then((path) => {
+            // The ride may have been cancelled while this was in flight.
+            if (!path || !destinations.has(id)) return;
+            const line = destinations.get(id).find((f) => f.geometry.type === 'LineString');
+            if (!line) return;
+            line.geometry.coordinates = path;
+            renderDestinations();
+          })
+          .catch((err) => console.warn('[map] Esri routing unavailable; keeping straight line', err));
+      }
     },
     clearDestinations() {
-      if (map.getSource('destinations')) {
-        map.getSource('destinations').setData({ type: 'FeatureCollection', features: [] });
-      }
+      destinations.clear();
+      renderDestinations();
     },
     async fetchRoute() {
       return null; // no routing without Google; dashed straight line remains
@@ -626,7 +748,7 @@ export async function createMap(
       // back to imagery rather than to a blank panel: a dispatcher needs to
       // see where the trucks are more than they need the licensed basemap.
       console.error('[map] ArcGIS failed, falling back to Esri imagery', err);
-      return createOsmMap(container, onMarkerClick, 'esri');
+      return createOsmMap(container, onMarkerClick, 'esri', arcgis?.apiKey ?? '');
     }
   }
   if (provider === 'google' && apiKey) {
@@ -634,10 +756,10 @@ export async function createMap(
       return await createGoogleMap(container, apiKey, onMarkerClick, theme);
     } catch (err) {
       console.error('[map] Google Maps failed, falling back to Esri imagery', err);
-      return createOsmMap(container, onMarkerClick, 'esri');
+      return createOsmMap(container, onMarkerClick, 'esri', arcgis?.apiKey ?? '');
     }
   }
-  return createOsmMap(container, onMarkerClick, provider === 'esri' ? 'esri' : 'osm');
+  return createOsmMap(container, onMarkerClick, provider === 'esri' ? 'esri' : 'osm', arcgis?.apiKey ?? '');
 }
 
 /**
