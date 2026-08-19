@@ -500,6 +500,18 @@ select {
 
 .sublock-unlock { margin-block-start: .5rem; }
 
+/*
+ * Command row header: status on one side, the cancel control on the other.
+ * The button only appears while a command is still waiting to be delivered,
+ * so the row is a plain line of text most of the time.
+ */
+.cmd-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+}
+
 /* --- Map marker labels ---------------------------------------------------- */
 
 /*

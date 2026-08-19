@@ -935,19 +935,86 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     return { id: rows[0]!.id, name, radiusM: radius, expiresInHours: hours };
   });
 
-  /** Disarm. Kept as a row so the audit trail still shows it existed. */
+  /**
+   * Disarm. Kept as a row so the audit trail still shows it existed.
+   *
+   * Also cancels the unlock this arrival already queued, if it fired while the
+   * vehicle was asleep and the command is still waiting to be delivered.
+   * Clearing the flag alone left that command live, so the lock opened on the
+   * next wake - minutes or hours after an operator watched the rule disappear
+   * and reasonably concluded nothing more would happen.
+   */
   app.delete('/api/devices/:id/arrivals/:arrivalId', async (req, reply) => {
     const id = deviceIdOf(req, reply);
     if (!id) return reply;
     const arrivalId = Number((req.params as { arrivalId?: string }).arrivalId);
     if (!Number.isInteger(arrivalId)) return reply.code(400).send({ error: 'invalid_id' });
 
-    const { rowCount } = await pool.query(
-      `UPDATE arrival_unlocks SET is_armed = false WHERE id = $1 AND device_id = $2 AND is_armed`,
+    const { rows } = await pool.query<{ triggered_command_id: number | null }>(
+      `UPDATE arrival_unlocks SET is_armed = false
+        WHERE id = $1 AND device_id = $2 AND is_armed
+        RETURNING triggered_command_id`,
       [arrivalId, id],
     );
-    await audit(req, 'arrival_unlock_disarmed', id, { arrivalId });
-    return { disarmed: rowCount === 1 };
+
+    // Only commands still awaiting delivery. One already 'sent' is on the wire
+    // and beyond recall, and saying otherwise would be worse than saying
+    // nothing - the operator needs to know to go and physically check.
+    let cancelledCommand: number | null = null;
+    const commandId = rows[0]?.triggered_command_id ?? null;
+    if (commandId) {
+      const { rowCount } = await pool.query(
+        `UPDATE commands SET status = 'expired',
+                last_error = 'cancelled with the arrival rule'
+          WHERE id = $1 AND status IN ('queued', 'approved')`,
+        [commandId],
+      );
+      if (rowCount === 1) cancelledCommand = commandId;
+    }
+
+    await audit(req, 'arrival_unlock_disarmed', id, { arrivalId, cancelledCommand });
+    return { disarmed: rows.length === 1, cancelledCommand };
+  });
+
+  /**
+   * Cancel a queued command before it reaches the vehicle.
+   *
+   * These locks sleep for up to 30 minutes, so an unlock can sit waiting long
+   * enough for the reason behind it to change - a delivery reassigned, a
+   * wrong vehicle picked, a decision reversed. Without this the only options
+   * were to let it fire or to edit the database by hand.
+   */
+  app.delete('/api/devices/:id/commands/:commandId', async (req, reply) => {
+    const id = deviceIdOf(req, reply);
+    if (!id) return reply;
+    const commandId = Number((req.params as { commandId?: string }).commandId);
+    if (!Number.isInteger(commandId)) return reply.code(400).send({ error: 'invalid_id' });
+
+    const { rows } = await pool.query<{ status: string; command_type: string }>(
+      'SELECT status, command_type FROM commands WHERE id = $1 AND device_id = $2',
+      [commandId, id],
+    );
+    const command = rows[0];
+    if (!command) return reply.code(404).send({ error: 'command_not_found' });
+
+    // 'sent' has already gone out over the socket; 'confirmed' has already
+    // happened. Refusing loudly is the honest answer for both, because the
+    // physical lock may now be open and somebody has to deal with that.
+    if (!['queued', 'approved', 'draft', 'pending_approval'].includes(command.status)) {
+      return reply.code(409).send({ error: 'not_cancellable', status: command.status });
+    }
+
+    const { rowCount } = await pool.query(
+      `UPDATE commands SET status = 'expired', last_error = 'cancelled by operator'
+        WHERE id = $1 AND status IN ('queued', 'approved', 'draft', 'pending_approval')`,
+      [commandId],
+    );
+    // Lost the race against the gateway claiming it, in the moment between the
+    // check above and this update.
+    if (rowCount !== 1) return reply.code(409).send({ error: 'not_cancellable', status: 'sent' });
+
+    await audit(req, 'command_cancelled', id, { commandType: command.command_type }, commandId);
+    return { cancelled: commandId };
   });
 
   app.get('/api/audit', async () => {

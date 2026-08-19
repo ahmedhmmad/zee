@@ -697,13 +697,41 @@ async function loadCommands(deviceId) {
       .slice(0, 8)
       .map((c) => {
         const [label, cls] = COMMAND_STATUS[c.status] ?? [c.status, ''];
+        // Cancellable only while it is still waiting to be delivered. Once
+        // sent, the frame is on the wire and offering a cancel would be
+        // promising something the platform cannot do.
+        const cancellable = ['queued', 'approved', 'draft', 'pending_approval'].includes(c.status);
         return `<li class="${cls}">
-          <div><strong>${label}</strong></div>
+          <div class="cmd-head">
+            <strong>${label}</strong>
+            ${cancellable ? `<button class="btn btn-ghost btn-xs" data-cancel-cmd="${c.id}">إلغاء</button>` : ''}
+          </div>
           <div class="muted">${escapeHtml(c.reason ?? '')}</div>
           <div class="when">${fmtDateTime(c.requested_at)} · ${escapeHtml(c.requested_by ?? '')}</div>
         </li>`;
       })
       .join('');
+
+    list.querySelectorAll('[data-cancel-cmd]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        try {
+          await api(`/api/devices/${deviceId}/commands/${btn.dataset.cancelCmd}`, { method: 'DELETE' });
+          toast('تم إلغاء الأمر', 'ok');
+        } catch (err) {
+          // 409 means the gateway claimed it while the operator was deciding.
+          // Say so plainly rather than reporting a generic failure: the lock
+          // may be about to open and that changes what they do next.
+          toast(
+            String(err?.message ?? '').includes('not_cancellable')
+              ? 'تعذّر الإلغاء — تم إرسال الأمر للجهاز بالفعل'
+              : 'تعذّر الإلغاء — حاول مرة أخرى',
+            'bad',
+          );
+        }
+        await loadCommands(deviceId);
+      });
+    });
   } catch {
     list.innerHTML = '<li class="empty">تعذّر التحميل</li>';
   }
