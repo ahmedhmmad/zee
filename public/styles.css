@@ -523,8 +523,16 @@ select {
  * Staleness is shown by fading, not hiding: an operator still needs to see
  * roughly where a vehicle was, they simply must not read it as current.
  */
-.truck-marker.aging { opacity: .6; }
-.truck-marker.stale { opacity: .35; }
+/*
+ * Dimmed, not erased. These were .6/.35, which read correctly over the pale
+ * street basemap they were tuned against and disappeared entirely over
+ * satellite imagery - where an operator reads a missing marker as "no
+ * vehicle" rather than "old fix". That is a worse error than the one the
+ * fading is here to prevent, and the panel's (موقع قديم) is the
+ * authoritative signal in any case.
+ */
+.truck-marker.aging { opacity: .8; }
+.truck-marker.stale { opacity: .6; }
 
 /* Custom history window: only shown when "فترة محددة" is selected. */
 .hist-custom { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; }

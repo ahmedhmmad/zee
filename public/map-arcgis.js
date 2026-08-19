@@ -150,8 +150,23 @@ export async function createArcgisMap(container, apiKey, onMarkerClick, theme = 
     };
   }
 
-  function vehicleSymbol(kind, heading, moving) {
-    const colour = colourFor(kind);
+  /**
+   * How much to trust what is drawn.
+   *
+   * Matches the Google and MapLibre adapters exactly - the same truck must not
+   * look different because the operator changed basemap. Applied as symbol
+   * alpha rather than a layer opacity so the white outline fades with it and
+   * the marker stays one coherent shape.
+   */
+  const ALPHA = { stale: 0.6, aging: 0.8 };
+
+  function vehicleSymbol(kind, heading, moving, freshness) {
+    const alpha = ALPHA[freshness] ?? 1;
+    const colour = [...colourFor(kind), alpha];
+    // The outline fades with the fill. Left opaque, a stale marker keeps a
+    // hard white ring around a washed-out centre, which reads as a rendering
+    // fault rather than as an old fix.
+    const outlineColour = [255, 255, 255, alpha];
     // A moving vehicle gets an arrow pointing where it is going; a stationary
     // one gets a circle. At rest the GPS reports whatever direction it last
     // faced, so an arrow would be inventing information.
@@ -163,14 +178,14 @@ export async function createArcgisMap(container, apiKey, onMarkerClick, theme = 
           color: colour,
           angle: heading ?? 0,
           size: 16,
-          outline: { color: [255, 255, 255], width: 1.5 },
+          outline: { color: outlineColour, width: 1.5 },
         }
       : {
           type: 'simple-marker',
           style: 'circle',
           color: colour,
           size: 13,
-          outline: { color: [255, 255, 255], width: 2 },
+          outline: { color: outlineColour, width: 2 },
         };
   }
 
@@ -203,13 +218,13 @@ export async function createArcgisMap(container, apiKey, onMarkerClick, theme = 
       );
     },
 
-    setMarker(id, lat, lon, { title, label, kind, heading, moving } = {}) {
+    setMarker(id, lat, lon, { title, label, kind, heading, moving, freshness } = {}) {
       const existing = markers.get(id);
       const geometry = point(lat, lon);
 
       if (existing) {
         existing.symbol.geometry = geometry;
-        existing.symbol.symbol = vehicleSymbol(kind, heading, moving);
+        existing.symbol.symbol = vehicleSymbol(kind, heading, moving, freshness);
         existing.label.geometry = geometry;
         existing.label.symbol = labelSymbol(label ?? title);
         existing.label.attributes = { text: label ?? title };
@@ -218,7 +233,7 @@ export async function createArcgisMap(container, apiKey, onMarkerClick, theme = 
 
       const symbol = new Graphic({
         geometry,
-        symbol: vehicleSymbol(kind, heading, moving),
+        symbol: vehicleSymbol(kind, heading, moving, freshness),
         attributes: { deviceId: id, title },
       });
       const text = new Graphic({

@@ -211,7 +211,14 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
       marker.setLabel(label ? labelFor(label) : null);
       // Fade rather than hide: an operator still needs to see roughly where
       // a truck was, they just must not read it as current.
-      marker.setOpacity(freshness === 'stale' ? 0.35 : freshness === 'aging' ? 0.6 : 1);
+      //
+      // These were 0.6/0.35, chosen against a pale street basemap. Over
+      // satellite imagery 0.35 is not dim, it is gone - and a missing marker
+      // reads as "no vehicle" rather than "old fix", which is a worse error
+      // than the one the fading exists to prevent. The panel's (موقع قديم)
+      // remains the authoritative signal; this is a secondary cue and only
+      // has to be noticeably dimmer, not nearly invisible.
+      marker.setOpacity(freshness === 'stale' ? 0.6 : freshness === 'aging' ? 0.8 : 1);
     },
     removeMarker(id) {
       const marker = markers.get(id);
