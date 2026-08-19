@@ -329,6 +329,14 @@ async function switchBasemap(provider) {
 
   const previous = state.selectedId;
   const container = document.getElementById('map');
+
+  // Stop the marker animation before the map goes away, rather than leaving a
+  // frame to fire against a half-rebuilt console.
+  if (animFrame) {
+    cancelAnimationFrame(animFrame);
+    animFrame = null;
+  }
+
   container.innerHTML = '';
   state.map = null;
 
@@ -388,16 +396,28 @@ function pointNow(a, now) {
 }
 
 function runAnimation() {
+  // Cleared first, never last. Anything thrown below used to leave a stale
+  // frame id here, and syncMarkers' `if (!animFrame)` then never scheduled
+  // another frame - so one error silently froze every marker for the rest of
+  // the session, while the rest of the console carried on working.
+  animFrame = null;
+
+  // Switching basemap nulls state.map and rebuilds it across an await. A frame
+  // queued before that lands in the gap with nothing to draw on; the
+  // syncMarkers() call after the rebuild starts the loop again.
+  const map = state.map;
+  if (!map) return;
+
   const now = performance.now();
   let active = false;
 
   for (const [id, a] of anim) {
     if (a.dur && now - a.start < a.dur) active = true;
     const [lat, lon] = pointNow(a, now);
-    state.map.setMarker(id, lat, lon, a.opts);
+    map.setMarker(id, lat, lon, a.opts);
   }
 
-  animFrame = active ? requestAnimationFrame(runAnimation) : null;
+  if (active) animFrame = requestAnimationFrame(runAnimation);
 }
 
 /**

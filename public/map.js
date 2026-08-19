@@ -37,34 +37,61 @@ const GOOGLE_DARK = [
   { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#4a6b7a' }] },
 ];
 
+/**
+ * Load a script once, however many times this is called.
+ *
+ * Switching basemap away from Google and back used to append the Maps API a
+ * second time, which Google warns about explicitly ("You have included the
+ * Google Maps JavaScript API multiple times") and which then fails to
+ * re-register every one of its custom elements. Caching the promise per URL
+ * makes a repeat call resolve against the load already in flight.
+ */
+const scriptLoads = new Map();
+
 function loadScript(src) {
-  return new Promise((resolve, reject) => {
+  const cached = scriptLoads.get(src);
+  if (cached) return cached;
+
+  const load = new Promise((resolve, reject) => {
     const el = document.createElement('script');
     el.src = src;
     el.async = true;
     el.onload = resolve;
-    el.onerror = () => reject(new Error(`failed to load ${src}`));
+    el.onerror = () => {
+      // Not cached on failure: a network blip should not poison every later
+      // attempt for the life of the page.
+      scriptLoads.delete(src);
+      reject(new Error(`failed to load ${src}`));
+    };
     document.head.appendChild(el);
   });
+
+  scriptLoads.set(src, load);
+  return load;
 }
 
 // --- Google ----------------------------------------------------------------
 
 async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
-  // With loading=async the script resolves before the library is usable, so
-  // wait on Google's own callback rather than the script's load event.
-  const ready = new Promise((resolve) => {
-    window.__gmapsReady = resolve;
-  });
+  // Already loaded by an earlier basemap switch. Google's `callback` fires
+  // once per script load, so waiting on it a second time would never resolve
+  // and the map would simply never appear.
+  if (!window.google?.maps) {
+    // With loading=async the script resolves before the library is usable, so
+    // wait on Google's own callback rather than the script's load event.
+    const ready = new Promise((resolve) => {
+      window.__gmapsReady = resolve;
+    });
 
-  // `language=ar` gives Arabic labels; `region=LY` biases place names and
-  // borders to Libyan usage. `loading=async` is Google's recommended pattern
-  // and avoids blocking the parser while the library downloads.
-  await loadScript(
-    `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}` +
-      '&language=ar&region=LY&loading=async&callback=__gmapsReady',
-  );
-  await ready;
+    // `language=ar` gives Arabic labels; `region=LY` biases place names and
+    // borders to Libyan usage. `loading=async` is Google's recommended pattern
+    // and avoids blocking the parser while the library downloads.
+    await loadScript(
+      `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}` +
+        '&language=ar&region=LY&loading=async&callback=__gmapsReady',
+    );
+    await ready;
+  }
 
   const map = new google.maps.Map(container, {
     center: TRIPOLI,
