@@ -371,7 +371,11 @@ const RASTER_BASEMAPS = {
   },
   esri: {
     label: 'قمر صناعي',
-    tiles: ['esri', 'esri-labels'],
+    // Three layers, in draw order: imagery, then street names, then place and
+    // boundary names on top. Imagery alone carries no labels at all, and the
+    // boundaries layer by itself is nearly empty at city zoom - the streets
+    // come from World_Transportation.
+    tiles: ['esri', 'esri-transport', 'esri-labels'],
     attribution: 'Esri, Maxar',
   },
 };

@@ -41,9 +41,20 @@ export const PROVIDERS: Record<string, { url: string; attribution: string }> = {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Esri, Maxar, Earthstar Geographics',
   },
-  // Place and road labels, transparent, designed to overlay the imagery above.
+  // Boundaries and settlement names, transparent, to overlay the imagery.
+  //
+  // Sparse on its own: over Tripoli this returns roughly 2.6 KB at zoom 15
+  // against 16 KB from the transportation layer below, because it carries
+  // administrative boundaries and major place names rather than streets. Used
+  // alone it reads as "the satellite view has no labels".
   'esri-labels': {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Esri',
+  },
+  // Street and road names. This is the layer that makes imagery navigable:
+  // without it an operator can see a depot but cannot say which road it is on.
+  'esri-transport': {
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Esri',
   },
 };
