@@ -263,11 +263,13 @@ function chosenBasemap(hasGoogleKey, hasArcgisKey = false) {
   // A saved choice whose key has since been removed would leave the operator
   // staring at a blank panel, so fall through to imagery instead.
   if (saved === 'google' && !hasGoogleKey) return hasArcgisKey ? 'arcgis' : 'esri';
-  if (saved === 'arcgis' && !hasArcgisKey) return hasGoogleKey ? 'google' : 'esri';
+  if (saved === 'arcgis' && !hasArcgisKey) return 'esri';
   if (saved) return saved;
-  // ArcGIS first when licensed: it is the client's own basemap and the one
-  // they expect to see.
-  return hasArcgisKey ? 'arcgis' : hasGoogleKey ? 'google' : 'esri';
+  // Esri by default. The client standardises on it, so that is what should be
+  // on screen when the console is opened cold - Google stays available in the
+  // picker but is no longer what anyone lands on. The licensed ArcGIS basemap
+  // takes precedence over the free imagery whenever a key is configured.
+  return hasArcgisKey ? 'arcgis' : 'esri';
 }
 
 async function initMap() {

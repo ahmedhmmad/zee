@@ -455,7 +455,16 @@ select {
 /* Arrow points where the vehicle is heading; upright circle when stopped. */
 .truck-arrow { display: inline-block; font-size: 15px; line-height: 1; transition: transform .3s ease; }
 .truck-marker.moving { background: var(--accent); }
-.truck-marker:not(.moving) .truck-arrow { opacity: .85; }
+/*
+ * Stopped is a plain filled circle, with the glyph hidden rather than left
+ * upright at .85. At rest the GPS reports whatever direction the vehicle last
+ * happened to face, so an arrow there points somewhere meaningless - and it
+ * read as "moving" to an operator looking at a parked truck.
+ *
+ * This is what the Google adapter already does by swapping the symbol between
+ * FORWARD_CLOSED_ARROW and CIRCLE; the two basemaps now agree.
+ */
+.truck-marker:not(.moving) .truck-arrow { display: none; }
 
 /* --- Trip history page ---------------------------------------------------- */
 
