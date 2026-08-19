@@ -497,8 +497,24 @@ select {
  * The label sits below the glyph and must stay upright and unrotated while the
  * arrow turns. text-shadow gives the halo that map labels need to stay legible
  * over both roads and satellite imagery.
+ *
+ * There is deliberately NO `position` on .truck-marker here.
+ *
+ * It used to carry `position: relative`, to act as the containing block for
+ * the absolutely positioned label below. But MapLibre positions its own
+ * markers with `.maplibregl-marker { position: absolute }`, an identical
+ * specificity to `.truck-marker` - and styles.css loads after maplibre-gl.css,
+ * so ours won. That dropped every marker out of absolute positioning and into
+ * normal flow, after a canvas several hundred pixels tall, and MapLibre's
+ * transform then offset it from there: off the bottom of the map and clipped.
+ *
+ * The element was in the DOM with the right coordinates and full opacity, and
+ * simply never visible - and only on the MapLibre basemaps, since Google draws
+ * its own markers and never matches this class.
+ *
+ * No rule is needed: MapLibre's `position: absolute` is itself a containing
+ * block for the label. Do not add one back.
  */
-.truck-marker { position: relative; }
 .truck-label {
   position: absolute;
   inset-block-start: 100%;
