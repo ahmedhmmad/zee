@@ -17,7 +17,8 @@ import { pool, createListener } from '../db.ts';
 import { apiRoutes } from './routes.ts';
 import { integrationRoutes } from './integration.ts';
 import { apiConfig } from './config.ts';
-import { fetchDevice } from './devices-query.ts';
+import { seedFromSharedPassword } from './users.ts';
+import { fetchDevicesByIds } from './devices-query.ts';
 import { evaluationPeriod } from '../evaluation.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -139,29 +140,91 @@ function broadcast(payload: string): void {
  * (a position, then a command status) collapse into one push carrying the
  * final state.
  */
-const pendingPushes = new Map<string, NodeJS.Timeout>();
-const PUSH_COALESCE_MS = 200;
+/*
+ * One dirty set, flushed on a single timer.
+ *
+ * The previous version kept a timer per device. Coalescing was therefore per
+ * device, which collapses nothing across a fleet of 3,000 distinct trucks: at
+ * ~36 reports a second it ran the device projection — two LATERAL subqueries
+ * apiece — 36 times a second against a pool of 15.
+ *
+ * This is batching, not caching. Every flush reads the rows fresh; it just
+ * reads them together.
+ */
+const dirty = new Map<string, string>(); // deviceId -> kind of the last change
+let flushTimer: NodeJS.Timeout | null = null;
+
+const PUSH_FLUSH_MS = 500;
+/**
+ * Ids per flush. A bigger batch is a longer single query holding a pool
+ * connection, and a bigger frame for every browser to parse at once; the
+ * remainder is not dropped, it goes out on the next flush 500ms later.
+ */
+const PUSH_BATCH_MAX = 500;
 
 function pushDeviceUpdate(kind: string, deviceId: string): void {
   if (sockets.size === 0) return; // nobody watching; skip the query entirely
-  if (pendingPushes.has(deviceId)) return;
 
-  pendingPushes.set(
-    deviceId,
-    setTimeout(() => {
-      pendingPushes.delete(deviceId);
-      void fetchDevice(deviceId)
-        .then((device) => {
-          // A device that vanished mid-flight still deserves a nudge, so the
-          // browser can drop it from the list.
-          broadcast(JSON.stringify({ kind, deviceId, device }));
-        })
-        .catch((err) => {
-          app.log.warn({ err, deviceId }, 'device push failed, falling back to nudge');
-          broadcast(JSON.stringify({ kind, deviceId }));
-        });
-    }, PUSH_COALESCE_MS).unref(),
-  );
+  // Last write wins for the kind: several changes to one vehicle inside the
+  // window (a position, then a command status) collapse into one push carrying
+  // its final state.
+  dirty.set(deviceId, kind);
+  if (flushTimer) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    void flushDeviceUpdates();
+  }, PUSH_FLUSH_MS);
+  flushTimer.unref();
+}
+
+async function flushDeviceUpdates(): Promise<void> {
+  if (dirty.size === 0 || sockets.size === 0) {
+    dirty.clear();
+    return;
+  }
+
+  const batch = [...dirty.keys()].slice(0, PUSH_BATCH_MAX);
+  const kinds = new Map(batch.map((id) => [id, dirty.get(id) ?? 'state']));
+  for (const id of batch) dirty.delete(id);
+
+  // Anything over the cap waits for the next flush rather than being dropped.
+  if (dirty.size > 0 && !flushTimer) {
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      void flushDeviceUpdates();
+    }, PUSH_FLUSH_MS);
+    flushTimer.unref();
+  }
+
+  try {
+    const devices = (await fetchDevicesByIds(batch)) as { device_id: string }[];
+
+    /*
+     * Broadcast as individual frames, which every console already understands.
+     *
+     * The database saving — the part that matters for capacity — is entirely
+     * in the batched read above and needs nothing from the client. The
+     * wire-level batch frame is a separate, smaller win and can only be
+     * switched on once no console predating it is still open.
+     */
+    for (const device of devices) {
+      broadcast(JSON.stringify({
+        kind: kinds.get(device.device_id) ?? 'state',
+        deviceId: device.device_id,
+        device,
+      }));
+    }
+
+    // A device that vanished mid-flight still deserves a nudge, so the browser
+    // can drop it from the list.
+    const returned = new Set(devices.map((d) => d.device_id));
+    for (const id of batch) {
+      if (!returned.has(id)) broadcast(JSON.stringify({ kind: kinds.get(id) ?? 'state', deviceId: id }));
+    }
+  } catch (err) {
+    app.log.warn({ err, count: batch.length }, 'device push failed, falling back to nudges');
+    for (const id of batch) broadcast(JSON.stringify({ kind: kinds.get(id) ?? 'state', deviceId: id }));
+  }
 }
 
 // A sibling of apiRoutes, never inside it: registering here keeps it clear of
@@ -180,17 +243,45 @@ app.setNotFoundHandler((req, reply) => {
 async function main(): Promise<void> {
   await pool.query('SELECT 1');
 
+  // Carry the old shared credential into a named account, once, so deploying
+  // named users does not lock every operator out of a live fleet. It warns
+  // loudly and does nothing on any subsequent start. See users.ts.
+  if (!apiConfig.authDisabled) {
+    await seedFromSharedPassword(apiConfig.sharedPassword).catch((err) => {
+      app.log.error({ err }, 'could not seed the initial operator account');
+    });
+  }
+
   // Forward device changes straight to the browsers; no polling anywhere.
-  await createListener('device_update', (payload) => {
-    try {
-      const { kind, deviceId } = JSON.parse(payload) as { kind?: string; deviceId?: string };
-      if (deviceId) return pushDeviceUpdate(kind ?? 'state', deviceId);
-    } catch {
-      // Malformed payload: fall through and forward it as-is rather than
-      // dropping a change the browser needs to know about.
-    }
-    broadcast(payload);
-  });
+  await createListener(
+    'device_update',
+    (payload) => {
+      try {
+        const { kind, deviceId } = JSON.parse(payload) as { kind?: string; deviceId?: string };
+        if (deviceId) return pushDeviceUpdate(kind ?? 'state', deviceId);
+      } catch {
+        // Malformed payload: fall through and forward it as-is rather than
+        // dropping a change the browser needs to know about.
+      }
+      broadcast(payload);
+    },
+    {
+      /*
+       * Everything that changed while the listener was down was missed —
+       * NOTIFY has no replay. Every open console is now showing a fleet frozen
+       * at the moment the connection dropped, with no indication of it: the
+       * map keeps drawing, the rows keep their timestamps, and a truck that
+       * has since been unlocked still reads as locked.
+       *
+       * A bare nudge is enough. The console refetches on a payload it cannot
+       * use, which is exactly what is wanted here.
+       */
+      onReconnect: () => {
+        app.log.warn('device_update listener reconnected; nudging consoles to resync');
+        broadcast(JSON.stringify({ kind: 'resync' }));
+      },
+    },
+  );
 
   if (evaluationPeriod.enabled) {
     if (evaluationPeriod.isExpired()) {

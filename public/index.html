@@ -19,11 +19,13 @@
 <div id="login" class="login-screen">
   <form class="login-card" id="login-form">
     <h1>منظومة أقفال الشاحنات</h1>
-    <p class="muted">الرجاء إدخال كلمة المرور للمتابعة</p>
+    <p class="muted">الرجاء إدخال اسم المستخدم وكلمة المرور</p>
+    <label for="username">اسم المستخدم</label>
+    <input type="text" id="username" autocomplete="username" required />
     <label for="password">كلمة المرور</label>
     <input type="password" id="password" autocomplete="current-password" required />
     <button type="submit" class="btn btn-primary">دخول</button>
-    <p class="error" id="login-error" hidden>كلمة المرور غير صحيحة</p>
+    <p class="error" id="login-error" hidden>بيانات الدخول غير صحيحة</p>
   </form>
 </div>
 
@@ -52,7 +54,12 @@
         <h2>المركبات</h2>
         <span id="device-count" class="muted"></span>
       </div>
-      <input type="search" id="search" placeholder="بحث بالاسم أو رقم اللوحة…" />
+      <!--
+        Autofocused because at fleet scale this is how a vehicle is found, not
+        by scrolling. Nobody reads three thousand rows.
+      -->
+      <input type="search" id="search" autofocus
+             placeholder="ابحث بالاسم أو رقم اللوحة للعثور على مركبة…" />
       <ul id="device-list" class="device-list"></ul>
     </aside>
 
@@ -133,7 +140,12 @@
           </div>
         </div>
 
-        <label class="checkline">
+        <!--
+          Hidden by default and revealed only when the server says sub-lock
+          unlocking is switched on. It is currently off: a valve unlock cannot
+          be confirmed, so it is not offered.
+        -->
+        <label class="checkline" id="arrival-sublocks-line" hidden>
           <input type="checkbox" id="arrival-sublocks" />
           افتح أقفال الصمامات الفرعية أيضاً
         </label>

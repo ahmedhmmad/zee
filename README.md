@@ -41,10 +41,30 @@ src/protocol/     Frame codec — the heart. Fully unit-tested.
   decode-ascii.ts   P45 lock events, heartbeat, time sync, dynamic password
   encode.ts       Acks and outbound commands
 src/gateway/      TCP server, per-socket sessions, persistence
+src/api/          Fastify routes, WebSocket push, device projection
+public/           Operator console — vanilla JS, Arabic UI, no framework
 migrations/       Schema
-scripts/          Device simulator
-test/             59 tests built from the manual's own worked examples
+scripts/          Device simulator, fleet simulator, migration runner, user admin
+deploy/           systemd units and the install script
+docs/             OpenAPI spec and the scaling roadmap
+test/             244 tests: the protocol codec from the manual's worked
+                  examples, plus the gateway session and command lifecycle
 ```
+
+## Roadmap
+
+The platform is field-proven on 2 trucks and being scaled to ~3,000.
+[`docs/scaling-plan.md`](docs/scaling-plan.md) is the plan in force — five phases, with Phase 1
+(correctness, capacity and pilot safety) specified in full.
+
+**Phase 1 is implemented.** What remains of it is verification: a staging run against the fleet
+simulator at the burst figures the plan sizes for, and the JT709 bench test that decides whether
+valve sub-lock unlocking can be switched back on. `CLAUDE.md` lists the invariants Phase 1
+established — read those before touching the command lifecycle, because each fixed a defect that
+is invisible in normal operation and each would look like a harmless simplification to undo.
+
+[`docs/scaling-plan-superseded.md`](docs/scaling-plan-superseded.md) is the previous revision,
+kept only so the design it proposed — and the reasons it was rejected — stay on the record.
 
 ## Development
 
@@ -56,10 +76,15 @@ npm install
 npm test
 ```
 
-The test suite decodes the exact hex frames printed in
-`JT701D_JT701E Protocol ManualV1.9.5.pdf` and asserts the field values the
+The protocol tests decode the exact hex frames printed in
+`JT701D_JT701E Protocol ManualV1.9.5.pdf` and assert the field values the
 manual states for each. That means the codec is verified against vendor
 ground truth without any hardware.
+
+The gateway tests drive a real `DeviceSession` over `test/fake-socket.ts` with a stubbed store,
+so command dispatch, chunk serialisation, backpressure and the replay limiter are exercised as
+behaviour rather than asserted as shape. Store queries themselves still have no database in the
+suite; those are pinned by reading the SQL, and need a staging run behind any change.
 
 ### Running locally against the simulator
 

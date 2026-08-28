@@ -16,6 +16,14 @@ const state = {
   googleMapsApiKey: '',
   arcgisApiKey: '',
   arcgisVersion: '',
+  // Whether valve sub-lock unlocking is switched on at all. Off means the
+  // controls are hidden — the API refuses regardless, so this only spares an
+  // operator a button that cannot work.
+  subLockUnlockEnabled: false,
+  // Who is logged in, and whether they may open locks. Same principle: the
+  // routes decide, this only keeps a useless button off the screen.
+  username: null,
+  mayUnlock: false,
   // Keep the selected vehicle centred as it drives. Without this the marker
   // wanders out of a static viewport and a moving truck looks stationary.
   follow: true,
@@ -115,17 +123,62 @@ const EVENT_NAMES = {
   unknown: 'غير معروف',
 };
 
+/*
+ * The status of a command is what happened in the EXCHANGE with the device —
+ * not whether the lock moved. That is the evidence line below, and the two are
+ * kept visibly apart on purpose: "تم التأكيد من الجهاز" used to be read as
+ * "the valve opened", which it never meant.
+ *
+ * Every status in the schema's CHECK constraint must appear here, or the
+ * fallback shows an operator a raw English code.
+ */
 const COMMAND_STATUS = {
   queued: ['في الانتظار', 'pending'],
   approved: ['معتمَد', 'pending'],
-  sent: ['أُرسل — بانتظار تأكيد الجهاز', 'pending'],
-  confirmed: ['تم التأكيد من الجهاز', 'ok'],
+  sent: ['أُرسل — بانتظار رد الجهاز', 'pending'],
+  confirmed: ['قبِله الجهاز', 'ok'],
   failed: ['فشل', 'bad'],
+  // Not a milder failure and not a slower success: the command may have
+  // executed. Saying so is the entire point of the state.
+  uncertain: ['غير معروف — لم يرد الجهاز', 'uncertain'],
   expired: ['انتهت صلاحيته', 'bad'],
   rejected: ['مرفوض', 'bad'],
   pending_approval: ['بانتظار الموافقة', 'pending'],
   draft: ['مسودة', 'pending'],
 };
+
+/** Why a command failed. Only device_rejected says anything about the password. */
+const FAILURE_CAUSE = {
+  device_rejected: 'رفضه الجهاز',
+  transport: 'فشل الإرسال عبر الشبكة',
+  no_response: 'لا يوجد رد من الجهاز',
+  cancelled: 'أُلغي',
+  unclassified: 'سبب غير مسجَّل',
+};
+
+const EVIDENCE_KIND = {
+  lock_event: 'سجل القفل من الجهاز',
+  peripheral_report: 'تقرير القفل الفرعي',
+};
+
+/**
+ * The movement line for a command that can actually move a valve.
+ *
+ * Absence of evidence is shown as absence of evidence — never as "لم يُفتح".
+ * The platform does not know, and on a tanker full of petrol the difference
+ * between "it did not open" and "we cannot tell whether it opened" is the
+ * whole safety argument.
+ */
+function evidenceLine(c) {
+  if (!c.is_physical) return '';
+  if (c.physically_evidenced_at) {
+    const kind = EVIDENCE_KIND[c.physical_evidence_kind] ?? c.physical_evidence_kind ?? '';
+    return `<div class="evidence yes">✔ تحرَّك القفل فعلياً — ${escapeHtml(kind)} · ${fmtDateTime(c.physically_evidenced_at)}</div>`;
+  }
+  // Nothing to evidence yet on a command that has not gone out.
+  if (['draft', 'pending_approval', 'approved', 'queued'].includes(c.status)) return '';
+  return '<div class="evidence no">لا يوجد إثبات على تحرّك القفل</div>';
+}
 
 const WAKE_REASONS = {
   device_restart: 'إعادة تشغيل',
@@ -197,10 +250,32 @@ $('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('login-error').hidden = true;
   try {
-    await api('/api/login', { method: 'POST', body: JSON.stringify({ password: $('password').value }) });
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: $('username').value.trim(),
+        password: $('password').value,
+      }),
+    });
+    const body = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      // Say which wall they hit. "Wrong password" for a rate limit sends an
+      // operator round in circles changing something that was already right.
+      $('login-error').textContent =
+        body.error === 'too_many_attempts'
+          ? 'محاولات كثيرة خلال وقت قصير. انتظر بضع دقائق ثم أعد المحاولة.'
+          : 'اسم المستخدم أو كلمة المرور غير صحيحة';
+      $('login-error').hidden = false;
+      return;
+    }
+
     $('password').value = '';
+    state.mayUnlock = body.mayUnlock === true;
     start();
   } catch {
+    $('login-error').textContent = 'تعذّر الاتصال بالخادم';
     $('login-error').hidden = false;
   }
 });
@@ -274,10 +349,18 @@ function chosenBasemap(hasGoogleKey, hasArcgisKey = false) {
 
 async function initMap() {
   if (state.map) return;
-  const { googleMapsApiKey, arcgisApiKey, arcgisVersion } = await api('/api/config');
+  const { googleMapsApiKey, arcgisApiKey, arcgisVersion, subLockUnlockEnabled } =
+    await api('/api/config');
   state.googleMapsApiKey = googleMapsApiKey;
   state.arcgisApiKey = arcgisApiKey;
   state.arcgisVersion = arcgisVersion;
+  state.subLockUnlockEnabled = subLockUnlockEnabled === true;
+
+  // The arrival rule's sub-lock option only exists where the capability does.
+  // Offering a tick box the server will refuse produces a rule the operator
+  // thinks covers the valves and does not.
+  const subLockLine = $('arrival-sublocks-line');
+  if (subLockLine) subLockLine.hidden = !state.subLockUnlockEnabled;
   const { createMap } = await import('/map.js');
   state.map = await createMap(
     document.getElementById('map'),
@@ -414,7 +497,21 @@ function runAnimation() {
   let active = false;
 
   for (const [id, a] of anim) {
-    if (a.dur && now - a.start < a.dur) active = true;
+    // Placed directly by syncMarkers — off screen, or a jump too big to tween.
+    // Redrawing it every frame was most of the loop's cost at fleet scale.
+    if (!a.dur) continue;
+
+    if (now - a.start >= a.dur) {
+      // One last draw to land it exactly, then leave it alone. The entry stays
+      // so the next fix knows where this marker came from.
+      if (!a.settled) {
+        map.setMarker(id, a.toLat, a.toLon, a.opts);
+        a.settled = true;
+      }
+      continue;
+    }
+
+    active = true;
     const [lat, lon] = pointNow(a, now);
     map.setMarker(id, lat, lon, a.opts);
   }
@@ -438,8 +535,35 @@ function markerFreshness(d) {
   return 'stale';
 }
 
+/**
+ * Is this position somewhere the operator can currently see?
+ *
+ * Read once per sync rather than per marker, and generously: a marker just off
+ * the edge may slide into view during its own animation, so the box is padded
+ * by a tenth of its own size. When the map cannot say, everything counts as
+ * visible — degrading to the old behaviour is the safe direction.
+ */
+function viewportBox() {
+  const b = state.map?.getBounds?.();
+  if (!b) return null;
+  const padLat = (b.north - b.south) * 0.1;
+  const padLon = (b.east - b.west) * 0.1;
+  return {
+    south: b.south - padLat,
+    north: b.north + padLat,
+    west: b.west - padLon,
+    east: b.east + padLon,
+  };
+}
+
+function inBox(box, lat, lon) {
+  if (!box) return true;
+  return lat >= box.south && lat <= box.north && lon >= box.west && lon <= box.east;
+}
+
 function syncMarkers() {
   if (!state.map) return;
+  const box = viewportBox();
   for (const device of state.devices) {
     if (!hasLocation(device)) {
       state.map.removeMarker(device.device_id);
@@ -479,7 +603,13 @@ function syncMarkers() {
     // gap, not movement we watched. Gliding across it would draw a route the
     // truck never took, so place it directly instead.
     const isGap = moved > 800;
-    const dur = isGap || moved < 1 ? 0 : Math.min(Math.max(fixMs || 2000, 800), 6000);
+    // Animation is only worth paying for where somebody can see it. At 3,000
+    // devices the animation loop is the frame budget, and almost all of it is
+    // spent tweening markers outside the viewport. Off-screen trucks are placed
+    // directly — their position is just as correct, it simply arrives without
+    // the slide.
+    const onScreen = inBox(box, device.latitude, device.longitude);
+    const dur = isGap || moved < 1 || !onScreen ? 0 : Math.min(Math.max(fixMs || 2000, 800), 6000);
 
     anim.set(id, {
       fromLat: curLat,
@@ -500,6 +630,48 @@ function syncMarkers() {
 
 // --- Rendering --------------------------------------------------------------
 
+/*
+ * Rendered rows, by device id, so an update can patch one row instead of
+ * rebuilding the list.
+ *
+ * `innerHTML = ''` followed by 3,000 createElement calls ran on every pushed
+ * message. At the fleet's ~36 messages a second that is a full teardown and
+ * rebuild of the whole list thirty-six times a second, plus 3,000 discarded
+ * click listeners each time — the console stopped being interactive long
+ * before the server did.
+ */
+const deviceRows = new Map(); // deviceId -> { li, html, cls }
+
+/** One listener for the whole list, reading the id off the row. */
+$('device-list').addEventListener('click', (e) => {
+  const li = e.target.closest('li[data-device-id]');
+  if (li) selectDevice(li.dataset.deviceId);
+});
+
+function deviceRowHtml(d) {
+  return `
+      <div class="row">
+        <span class="name">${escapeHtml(d.name)}</span>
+        ${lockPill(d)}
+      </div>
+      <div class="row">
+        <span class="muted">${escapeHtml(d.plate_number ?? d.device_id)}</span>
+        <span class="muted">${batteryLabel(d)} · ${fmtAgo(d.last_position_at ?? d.last_seen_at)}${positionIsLagging(d) ? ' ⏳' : ''}</span>
+      </div>`;
+}
+
+function deviceRowClass(d) {
+  // Only genuine loss of contact greys a vehicle out. A sleeping device
+  // still shows its lock state, because that is what operators care about.
+  const kind =
+    connectionState(d) === 'offline'
+      ? 'is-offline'
+      : d.motor_locked === false
+        ? 'is-unlocked'
+        : 'is-locked';
+  return `device-item ${kind}${d.device_id === state.selectedId ? ' selected' : ''}`;
+}
+
 function renderDeviceList() {
   const query = $('search').value.trim().toLowerCase();
   const list = $('device-list');
@@ -511,38 +683,57 @@ function renderDeviceList() {
   );
 
   $('device-count').textContent = `${visible.length} مركبة`;
-  list.innerHTML = '';
 
   if (visible.length === 0) {
+    for (const { li } of deviceRows.values()) li.remove();
+    deviceRows.clear();
     list.innerHTML = '<li class="muted">لا توجد مركبات مطابقة</li>';
     return;
   }
 
-  for (const d of visible) {
-    const li = document.createElement('li');
-    li.className = 'device-item';
-    // Only genuine loss of contact greys a vehicle out. A sleeping device
-    // still shows its lock state, because that is what operators care about.
-    li.classList.add(
-      connectionState(d) === 'offline'
-        ? 'is-offline'
-        : d.motor_locked === false
-          ? 'is-unlocked'
-          : 'is-locked',
-    );
-    if (d.device_id === state.selectedId) li.classList.add('selected');
+  // The empty-state <li> carries no device id, so it is swept here rather than
+  // being left behind above the real rows.
+  for (const li of list.querySelectorAll('li:not([data-device-id])')) li.remove();
 
-    li.innerHTML = `
-      <div class="row">
-        <span class="name">${escapeHtml(d.name)}</span>
-        ${lockPill(d)}
-      </div>
-      <div class="row">
-        <span class="muted">${escapeHtml(d.plate_number ?? d.device_id)}</span>
-        <span class="muted">${batteryLabel(d)} · ${fmtAgo(d.last_position_at ?? d.last_seen_at)}${positionIsLagging(d) ? ' ⏳' : ''}</span>
-      </div>`;
-    li.addEventListener('click', () => selectDevice(d.device_id));
-    list.appendChild(li);
+  const wanted = new Set(visible.map((d) => d.device_id));
+  for (const [id, row] of deviceRows) {
+    if (!wanted.has(id)) {
+      row.li.remove();
+      deviceRows.delete(id);
+    }
+  }
+
+  // Rebuilt only where something actually changed. A fleet where one truck
+  // moved touches one row.
+  let previous = null;
+  for (const d of visible) {
+    let row = deviceRows.get(d.device_id);
+    if (!row) {
+      const li = document.createElement('li');
+      li.dataset.deviceId = d.device_id;
+      row = { li, html: null, cls: null };
+      deviceRows.set(d.device_id, row);
+    }
+
+    const html = deviceRowHtml(d);
+    if (html !== row.html) {
+      row.li.innerHTML = html;
+      row.html = html;
+    }
+    const cls = deviceRowClass(d);
+    if (cls !== row.cls) {
+      row.li.className = cls;
+      row.cls = cls;
+    }
+
+    // Keep the DOM in the same order as `visible` without moving rows that are
+    // already in place: a node re-inserted where it already is still costs a
+    // reflow, and at 3,000 rows that is the whole saving.
+    const shouldFollow = previous ? previous.nextElementSibling : list.firstElementChild;
+    if (shouldFollow !== row.li) {
+      list.insertBefore(row.li, previous ? previous.nextElementSibling : list.firstElementChild);
+    }
+    previous = row.li;
   }
 }
 
@@ -643,7 +834,13 @@ async function renderDetail() {
   $('d-rope').textContent = d.rope_inserted == null ? '—' : d.rope_inserted ? 'مُدخَل' : 'مسحوب';
   // The odometer is a lifetime counter, useful for servicing but useless for
   // "what did this truck do today" — so the per-period figures lead.
-  const km = (v) => (v == null ? '—' : `${Math.round(Number(v))} كم`);
+  //
+  // An odometer reset inside the period makes the span meaningless — one reset
+  // reads as about 99,994 km. Say the figure cannot be trusted rather than
+  // printing it: this feeds a Ministry report, and a confident wrong number is
+  // worse than an admitted gap.
+  const km = (v) =>
+    d.mileage_has_anomaly ? 'غير موثوق (تغيّر العدّاد)' : v == null ? '—' : `${Math.round(Number(v))} كم`;
   $('d-dist-today').textContent = km(d.today_km);
   $('d-dist-week').textContent = km(d.week_km);
   $('d-mileage').textContent = d.mileage_km != null ? `${d.mileage_km} كم` : '—';
@@ -681,7 +878,13 @@ async function renderDetail() {
     ? `<strong>تنبيهات نشطة:</strong><br>${alarms.map((a) => ALARM_NAMES[a] ?? a).join('، ')}`
     : '';
 
-  $('unlock-btn').disabled = false;
+  // A view-only account gets the button greyed out with the reason on it,
+  // rather than a button that looks live and returns 403. The route refuses
+  // either way; this is so nobody has to find that out by pressing it.
+  const unlockBtn = $('unlock-btn');
+  unlockBtn.disabled = !state.mayUnlock;
+  unlockBtn.title = state.mayUnlock ? '' : 'هذا الحساب مخوَّل بالمتابعة فقط';
+
   await Promise.all([loadCommands(d.device_id), loadEvents(d.device_id), loadArrivals(d.device_id), loadSubLocks(d.device_id)]);
 }
 
@@ -696,16 +899,22 @@ async function loadCommands(deviceId) {
     list.innerHTML = commands
       .slice(0, 8)
       .map((c) => {
-        const [label, cls] = COMMAND_STATUS[c.status] ?? [c.status, ''];
+        const [label, cls] = COMMAND_STATUS[c.status] ?? [`حالة غير معروفة (${escapeHtml(c.status)})`, 'bad'];
         // Cancellable only while it is still waiting to be delivered. Once
         // sent, the frame is on the wire and offering a cancel would be
-        // promising something the platform cannot do.
+        // promising something the platform cannot do. 'uncertain' is not
+        // cancellable for the same reason, and more so: it may have executed.
         const cancellable = ['queued', 'approved', 'draft', 'pending_approval'].includes(c.status);
+        const cause = c.status === 'failed' && c.failure_cause
+          ? `<div class="muted">${escapeHtml(FAILURE_CAUSE[c.failure_cause] ?? c.failure_cause)}</div>`
+          : '';
         return `<li class="${cls}">
           <div class="cmd-head">
             <strong>${label}</strong>
             ${cancellable ? `<button class="btn btn-ghost btn-xs" data-cancel-cmd="${c.id}">إلغاء</button>` : ''}
           </div>
+          ${evidenceLine(c)}
+          ${cause}
           <div class="muted">${escapeHtml(c.reason ?? '')}</div>
           <div class="when">${fmtDateTime(c.requested_at)} · ${escapeHtml(c.requested_by ?? '')}</div>
         </li>`;
@@ -889,6 +1098,10 @@ async function loadSubLocks(deviceId) {
         '<li class="empty">لا توجد أقفال فرعية معروفة — اضغط "تحديث القائمة" لسؤال الجهاز</li>';
       return;
     }
+    // Read before the map: `state` is shadowed inside it by the lock-state
+    // pill below.
+    const unlockEnabled = state.subLockUnlockEnabled;
+
     list.innerHTML = subs
       .map((s) => {
         // Bound but never heard from: the master lists it, yet it has sent
@@ -926,7 +1139,11 @@ async function loadSubLocks(deviceId) {
         const alarming = s.comms_lost_alarm || s.back_cover_open === true || s.locked === false;
 
         // Valve locks can be opened; temperature sensors obviously cannot.
-        const unlockable = s.device_type === 'jt709_sub_lock' || s.device_type === 'jt802_valve_lock';
+        // And only while sub-lock unlocking is switched on: there is currently
+        // no way to confirm a valve actually opened, so the capability is off.
+        const unlockable =
+          unlockEnabled &&
+          (s.device_type === 'jt709_sub_lock' || s.device_type === 'jt802_valve_lock');
 
         return `<li class="${alarming ? 'bad' : ''}">
           <div class="row">
@@ -1396,7 +1613,9 @@ $('arrival-form').addEventListener('submit', async (e) => {
         locationId,
         radiusM: radius ? Number(radius) : undefined,
         expiresInHours: Number($('arrival-expiry').value),
-        includeSubLocks: $('arrival-sublocks').checked,
+        // A hidden checkbox can still be checked from an earlier session, so
+        // the flag gates the value rather than the control.
+        includeSubLocks: state.subLockUnlockEnabled && $('arrival-sublocks').checked,
         reason: $('arrival-reason').value.trim(),
       }),
     });
@@ -1887,12 +2106,18 @@ function renderConnectionStatus() {
 }
 
 /**
- * Apply one pushed change.
+ * Apply one pushed change, or a batch of them.
  *
  * The server sends the changed vehicle's row with the notification, so the
- * common case patches a single entry instead of refetching the fleet. The
- * bare-nudge form is still honoured, because a malformed or partial payload
- * must never leave the console silently out of date.
+ * common case patches entries instead of refetching the fleet. Two shapes are
+ * accepted: the original `{ deviceId, device }` and a batch
+ * `{ devices: [...] }`, so a server that batches its flushes and a console that
+ * has not been reloaded yet keep working with each other.
+ *
+ * A vehicle not already in the list is ADDED, not refetched. Falling through to
+ * a full-fleet `/api/devices` on an unknown id was a feedback loop that fired
+ * hardest exactly when the database was already struggling — every open console
+ * refetching all 3,000 rows on every flush.
  */
 function applyUpdate(raw) {
   let msg;
@@ -1902,16 +2127,35 @@ function applyUpdate(raw) {
     return void refresh();
   }
 
-  if (!msg?.deviceId || !msg.device) return void refresh();
+  const incoming = Array.isArray(msg?.devices)
+    ? msg.devices
+    : msg?.deviceId && msg.device
+      ? [msg.device]
+      : null;
 
-  const i = state.devices.findIndex((d) => d.device_id === msg.deviceId);
-  if (i === -1) return void refresh(); // a vehicle we do not know yet
-  state.devices[i] = msg.device;
+  // A bare nudge with no payload at all is still honoured: a malformed or
+  // partial message must never leave the console silently out of date.
+  if (!incoming) return void refresh();
+
+  const byId = new Map(state.devices.map((d, i) => [d.device_id, i]));
+  let touchedSelected = false;
+
+  for (const device of incoming) {
+    if (!device?.device_id) continue;
+    const i = byId.get(device.device_id);
+    if (i === undefined) {
+      byId.set(device.device_id, state.devices.length);
+      state.devices.push(device);
+    } else {
+      state.devices[i] = device;
+    }
+    if (state.selectedId === device.device_id) touchedSelected = true;
+  }
 
   renderDeviceList();
   syncMarkers();
   followSelected();
-  if (state.selectedId === msg.deviceId) renderDetail();
+  if (touchedSelected) renderDetail();
 }
 
 function setStatus(text, cls) {
@@ -1971,8 +2215,15 @@ async function start() {
 
 (async () => {
   try {
-    const { authenticated } = await fetch('/api/session').then((r) => r.json());
-    if (authenticated) return start();
+    const { authenticated, mayUnlock, username } = await fetch('/api/session').then((r) => r.json());
+    if (authenticated) {
+      // Carried so the console can hide controls this account cannot use. The
+      // routes enforce it regardless — a hidden button is a courtesy, not a
+      // permission check.
+      state.mayUnlock = mayUnlock === true;
+      state.username = username ?? null;
+      return start();
+    }
   } catch {
     // Network or server unavailable — fall through to the login screen rather
     // than leaving the page in whatever state the markup happened to start in.

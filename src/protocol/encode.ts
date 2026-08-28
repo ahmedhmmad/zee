@@ -217,6 +217,20 @@ export function wlnetUnlockSubLock(deviceId: string, subLockId: string, minutes 
  * heartbeat wake also lets the sub-lock collect a queued unlock is NOT stated
  * anywhere - plausible, since it is a wake like any other, but untested and
  * not promised. Do not rely on it until it has been observed on hardware.
+ *
+ * STILL UNANSWERED, and it is why sub-lock unlocking is switched off
+ * (`config.subLockUnlockEnabled`, default false). If a heartbeat wake does not
+ * collect a queued unlock, a valve unlock has no confirmation path at all: the
+ * WLNET,8 reply is a bare echo and a sleeping JT709 says nothing.
+ *
+ * The bench test that settles it, on one master and one sub-lock:
+ *   1. Enable a heartbeat on the peripheral with this command.
+ *   2. Queue a sub-lock unlock while the peripheral is asleep.
+ *   3. Observe whether the heartbeat wake collects and executes it, and
+ *      whether the peripheral then reports locked === false.
+ *
+ * Replace this note with what was observed. If the answer is no, it becomes a
+ * vendor question rather than a platform one, and the feature stays gated.
  */
 export function wlnetSetHeartbeat(deviceId: string, beatSeconds: number, alarmSeconds: number): Buffer {
   const clamp = (v: number) => (v <= 0 ? 0 : Math.min(Math.max(Math.round(v), 5), 86400));

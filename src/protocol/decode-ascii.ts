@@ -48,6 +48,11 @@ export function decodeAsciiFrame(frame: Buffer): DecodedFrame {
       deviceId,
       command: `WLNET,${parts[wlnetIdx + 1] ?? '?'}`,
       params: parts.slice(wlnetIdx + 2),
+      // (deviceId, version, serial, WLNET, index, ...) — the serial is the
+      // field immediately before the WLNET word. It was previously dropped,
+      // which left the platform with no way at all to tell two identical
+      // outstanding WLNET commands apart.
+      serial: wlnetIdx >= 3 ? (parts[wlnetIdx - 1] ?? null) : null,
       raw: text,
     } satisfies CommandResponseFrame;
   }
@@ -76,6 +81,9 @@ export function decodeAsciiFrame(frame: Buffer): DecodedFrame {
     deviceId,
     command,
     params: parts.slice(2),
+    // P-commands are `(P43,123456)` — there is no serial field to carry, so
+    // two outstanding P43s can only ever be told apart by refusing to guess.
+    serial: null,
     raw: text,
   } satisfies CommandResponseFrame;
 }

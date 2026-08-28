@@ -273,7 +273,25 @@ label { font-size: .85rem; color: var(--muted); }
 .feed li.ok { border-inline-start-color: var(--accent); }
 .feed li.bad { border-inline-start-color: var(--danger); }
 .feed li.pending { border-inline-start-color: var(--warn); }
+/*
+ * 'uncertain' is neither a milder failure nor a slower success — the command
+ * may have executed and the platform cannot tell. Dashed rather than solid, so
+ * an operator scanning the list reads an unfinished edge rather than a colour
+ * that looks like progress.
+ */
+.feed li.uncertain {
+  border-inline-start-color: var(--warn);
+  border-inline-start-style: dashed;
+}
 .feed .when { color: var(--muted); font-size: .75rem; }
+
+/*
+ * Physical movement, shown apart from the command's status. "No evidence" is
+ * deliberately not styled as an error: it is a statement about what we know.
+ */
+.feed .evidence { font-size: .76rem; margin-block-start: .25rem; }
+.feed .evidence.yes { color: var(--accent); }
+.feed .evidence.no { color: var(--warn); }
 .feed .empty { color: var(--muted); }
 
 /* --- Modal and toast ---------------------------------------------------- */

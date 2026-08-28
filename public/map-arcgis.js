@@ -346,6 +346,15 @@ export async function createArcgisMap(container, apiKey, onMarkerClick, theme = 
       void view.goTo({ center: [lon, lat] }, { duration: 400 });
     },
 
+    /** See the Google adapter's getBounds in map.js. */
+    getBounds() {
+      // view.extent is in the view's spatial reference; latLonExtent is the
+      // WGS84 one, which is what the caller works in.
+      const e = view.extent?.latLonExtent ?? view.extent;
+      if (!e) return null;
+      return { south: e.ymin, west: e.xmin, north: e.ymax, east: e.xmax };
+    },
+
     raw: view,
   };
 }

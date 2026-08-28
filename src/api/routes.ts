@@ -1,22 +1,107 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { pool } from '../db.ts';
-import { apiConfig } from './config.ts';
+import { config } from '../config.ts';
+import { apiConfig, RateLimiter } from './config.ts';
+import {
+  findActiveById,
+  findByUsername,
+  hashPassword,
+  recordLogin,
+  verifyPassword,
+  type User,
+} from './users.ts';
+
+declare module 'fastify' {
+  interface FastifyRequest {
+    /** Resolved once per request by the auth hook. null means nobody. */
+    zeeUser?: User | null;
+  }
+}
+
+/*
+ * Login: five attempts per account and twenty per address, per five minutes.
+ *
+ * Per account so one operator's password cannot be ground down; per address
+ * because the account limit alone is sidestepped by working through usernames.
+ */
+const loginByUser = new RateLimiter(5, 5 * 60_000);
+const loginByIp = new RateLimiter(20, 5 * 60_000);
+
+/*
+ * Unlocks: ten per operator and twenty per address, per minute.
+ *
+ * Not an anti-fraud control — a permitted operator can unlock a permitted
+ * truck. It is a bound on a script or a stuck retry loop opening valves across
+ * the fleet faster than anyone could notice.
+ */
+const unlockByUser = new RateLimiter(10, 60_000);
+const unlockByIp = new RateLimiter(20, 60_000);
+
+/**
+ * Verified against when no such account exists, so a missing username and a
+ * wrong password cost the same time. Computed once at startup; the password it
+ * hashes is random and is never anybody's.
+ */
+const DUMMY_HASH = await hashPassword(crypto.randomUUID());
 import { tileRoutes } from './tiles.ts';
 import { fetchDevices } from './devices-query.ts';
 import { encode } from '../protocol/index.ts';
 
 const DEVICE_ID = /^\d{10}$/;
 
+/**
+ * What a queued unlock stores instead of the password.
+ *
+ * `commands.payload` lives for thirty days and is readable by anyone with
+ * database access; it was carrying every truck's unlock password in clear. The
+ * gateway fills the placeholder in at the moment it dispatches. See
+ * `substitutePlaceholders` in src/gateway/store.ts, which is the one place that
+ * knows what these expand to.
+ */
+const STATIC_PASSWORD_PLACEHOLDER_PAYLOAD = '(P43,{{static_password}})';
+
 export async function apiRoutes(app: FastifyInstance): Promise<void> {
   // --- Auth ---------------------------------------------------------------
 
   app.post('/api/login', async (req, reply) => {
-    const { password } = (req.body ?? {}) as { password?: string };
-    if (!password || !apiConfig.checkPassword(password)) {
-      await audit(req, 'login_failed', null, {});
-      return reply.code(401).send({ error: 'invalid_password' });
+    const { username, password } = (req.body ?? {}) as { username?: string; password?: string };
+    const name = (username ?? '').trim();
+
+    /*
+     * Rate limited per account AND per address before anything else happens.
+     * Either check alone is trivially sidestepped: one account from a botnet,
+     * or one address working through a list of usernames.
+     *
+     * The refusal is deliberately identical to a wrong password, so the limiter
+     * does not become a way to find out which usernames exist.
+     */
+    const withinLimits =
+      loginByIp.allow(req.ip) && (name === '' || loginByUser.allow(name.toLowerCase()));
+    if (!withinLimits) {
+      await audit(req, 'login_rate_limited', null, { username: name });
+      return reply.code(429).send({ error: 'too_many_attempts' });
     }
-    reply.setCookie(apiConfig.cookieName, 'ok', {
+
+    const user = name ? await findByUsername(name) : null;
+
+    // Ordering matters: verify even when the user does not exist, against a
+    // dummy hash, so a missing account and a wrong password take the same time.
+    // Without that, the response time alone enumerates valid usernames.
+    const ok = user
+      ? user.is_active && (await verifyPassword(password ?? '', user.password_hash))
+      : (await verifyPassword(password ?? '', DUMMY_HASH), false);
+
+    if (!ok || !user) {
+      await audit(req, 'login_failed', null, { username: name });
+      return reply.code(401).send({ error: 'invalid_credentials' });
+    }
+
+    loginByIp.clear(req.ip);
+    loginByUser.clear(name.toLowerCase());
+    await recordLogin(user.id);
+
+    // The cookie carries WHO, not merely that somebody once knew a password.
+    reply.setCookie(apiConfig.cookieName, String(user.id), {
       path: '/',
       httpOnly: true,
       sameSite: 'strict',
@@ -29,8 +114,9 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
       signed: true,
       maxAge: 60 * 60 * 12,
     });
-    await audit(req, 'login', null, {});
-    return { ok: true };
+    req.zeeUser = user;
+    await audit(req, 'login', null, { username: user.username });
+    return { ok: true, username: user.username, mayUnlock: user.may_unlock };
   });
 
   app.post('/api/logout', async (_req, reply) => {
@@ -38,7 +124,36 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true };
   });
 
-  app.get('/api/session', async (req) => ({ authenticated: apiConfig.isAuthenticated(req) }));
+  app.get('/api/session', async (req) => {
+    const user = await currentUser(req);
+    return {
+      authenticated: apiConfig.isAuthenticated(req),
+      username: user?.username ?? null,
+      // The console hides the unlock controls on this. The routes enforce it
+      // regardless — hiding a button is a courtesy, never the gate.
+      mayUnlock: user ? user.may_unlock : apiConfig.authDisabled,
+    };
+  });
+
+  /**
+   * Operational health, for the fleet ramp and for whatever watches this box.
+   *
+   * Unauthenticated from loopback only — a monitoring agent on the same host
+   * should not need a session cookie, but pool depths and fleet counts are not
+   * for the open internet. From anywhere else it falls through to the normal
+   * auth hook below.
+   *
+   * The gateway's numbers come from gateway_health, written by that process
+   * once per sweep. `staleSeconds` is the load-bearing field: if it climbs, the
+   * gateway has stopped reporting and everything else in that block is history,
+   * not status.
+   */
+  app.get('/api/health', async (req, reply) => {
+    if (!isLoopback(req.ip) && !apiConfig.isAuthenticated(req)) {
+      return reply.code(401).send({ error: 'unauthorised' });
+    }
+    return healthReport();
+  });
 
   // --- Everything below requires a session --------------------------------
 
@@ -52,6 +167,20 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
       req.log.warn({ url: req.url, reason, ip: req.ip }, 'unauthenticated request');
       return reply.code(401).send({ error: 'unauthorised', reason });
     }
+
+    /*
+     * Resolve the account behind the cookie on every request, not just at
+     * login. A deactivated operator's session would otherwise keep working —
+     * and keep opening valves — for the twelve hours until their cookie
+     * expired. Deactivation has to take effect now.
+     */
+    if (!apiConfig.authDisabled) {
+      const user = await currentUser(req);
+      if (!user) {
+        reply.clearCookie(apiConfig.cookieName, { path: '/' });
+        return reply.code(401).send({ error: 'unauthorised', reason: 'account_inactive' });
+      }
+    }
   });
 
   // Registered inside this scope so it inherits the auth hook above: map
@@ -63,6 +192,10 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     googleMapsApiKey: apiConfig.googleMapsApiKey || null,
     arcgisApiKey: apiConfig.arcgisApiKey || null,
     arcgisVersion: apiConfig.arcgisVersion,
+    // The console hides the sub-lock unlock controls when this is false. The
+    // routes refuse regardless — hiding a control is a courtesy, never the
+    // gate itself.
+    subLockUnlockEnabled: config.subLockUnlockEnabled,
   }));
 
   app.get('/api/devices', async () => fetchDevices());
@@ -150,11 +283,19 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     const id = deviceIdOf(req, reply);
     if (!id) return reply;
     const { rows } = await pool.query(
-      `SELECT id, command_type, status, requested_by, reason,
-              requested_at, sent_at, confirmed_at, expires_at, last_error
-         FROM commands
-        WHERE device_id = $1
-        ORDER BY requested_at DESC
+      // is_physical and the evidence columns travel together on purpose. The
+      // console has to be able to say "the device accepted this, and no
+      // movement has been evidenced" — which is only meaningful, and only
+      // alarming, for a command that can actually move a valve.
+      `SELECT c.id, c.command_type, c.status, c.requested_by, c.reason,
+              c.requested_at, c.sent_at, c.confirmed_at, c.expires_at,
+              c.last_error, c.failure_cause,
+              c.physically_evidenced_at, c.physical_evidence_kind,
+              COALESCE(t.is_physical, true) AS is_physical
+         FROM commands c
+         LEFT JOIN command_types t ON t.command_type = c.command_type
+        WHERE c.device_id = $1
+        ORDER BY c.requested_at DESC
         LIMIT 50`,
       [id],
     );
@@ -171,6 +312,9 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/devices/:id/unlock', async (req, reply) => {
     const id = deviceIdOf(req, reply);
     if (!id) return reply;
+
+    if (!(await requireUnlockRole(req, reply))) return reply;
+    if (!(await allowUnlockAttempt(req, reply, id))) return reply;
 
     const { reason, ttlMinutes } = (req.body ?? {}) as { reason?: string; ttlMinutes?: number };
     if (!reason || reason.trim().length < 3) {
@@ -203,6 +347,11 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
      *
      * Counted only since the password was last changed - correcting it makes
      * previous failures irrelevant and clears the block automatically.
+     *
+     * Only the DEVICE rejecting us counts. A socket that broke says nothing
+     * about the password, and an 'uncertain' command says nothing about
+     * anything - counting either was how a link problem locked an operator out
+     * of a truck whose password was fine all along.
      */
     const { rows: failureRows } = await pool.query<{ failures: number }>(
       `SELECT count(*)::int AS failures
@@ -210,6 +359,7 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
         WHERE c.device_id = $1
           AND c.command_type IN ('unlock_static', 'unlock_dynamic')
           AND c.status = 'failed'
+          AND c.failure_cause = 'device_rejected'
           AND c.requested_at > (SELECT password_updated_at FROM devices WHERE device_id = $1)
           AND c.requested_at > COALESCE((
                 SELECT max(requested_at) FROM commands
@@ -225,11 +375,23 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(409).send({ error: 'repeated_password_failures', failures });
     }
 
+    /*
+     * The password is NOT written into the queue.
+     *
+     * `commands.payload` is kept for 30 days, read by anyone with database
+     * access, and was carrying the unlock password of every truck in clear.
+     * The gateway substitutes the placeholder from `devices.static_password` at
+     * the moment it dispatches — see claimPendingCommands.
+     *
+     * A side benefit: a command queued before a password rotation goes out with
+     * the password the device actually holds, rather than the one it held when
+     * an operator pressed the button.
+     */
     const { rows: inserted } = await pool.query<{ id: number }>(
       `INSERT INTO commands (device_id, command_type, payload, requested_by, reason, status, expires_at)
        VALUES ($1, 'unlock_static', $2, $3, $4, 'queued', now() + ($5 || ' minutes')::interval)
        RETURNING id`,
-      [id, `(P43,${device.static_password})`, actorOf(req), reason.trim(), ttl],
+      [id, STATIC_PASSWORD_PLACEHOLDER_PAYLOAD, actorOf(req), reason.trim(), ttl],
     );
 
     const commandId = inserted[0]!.id;
@@ -366,8 +528,19 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
        VALUES ($1, 'set_password', $2, $3, 'rotate static password', 'queued',
                now() + interval '4 hours', $4)
        RETURNING id`,
-      [id, `(P44,${next},${current})`, actorOf(req), JSON.stringify({ newPassword: next })],
+      // Neither password goes in the payload. The new one is in metadata,
+      // because the rotation cannot be adopted without it, and the current one
+      // the gateway reads from `devices` at dispatch — so the credential lives
+      // in one place instead of three. `current` is read above only to prove
+      // the device exists.
+      [
+        id,
+        `(P44,{{new_password}},{{static_password}})`,
+        actorOf(req),
+        JSON.stringify({ newPassword: next }),
+      ],
     );
+    void current;
 
     await audit(req, 'password_rotation_requested', id, { weakPassword: isWeak }, inserted[0]!.id);
     return { commandId: inserted[0]!.id, weakPassword: isWeak };
@@ -462,6 +635,9 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
    * Needed because a JT709 defaults to no LoRa heartbeat, so a newly fitted
    * valve lock stays invisible until somebody presses its wake button. This
    * makes it appear as soon as the master answers.
+   *
+   * Not gated by SUBLOCK_UNLOCK_ENABLED: reading which peripherals a master
+   * has bound opens nothing.
    */
   app.post('/api/devices/:id/sublocks/refresh', async (req, reply) => {
     const id = deviceIdOf(req, reply);
@@ -486,10 +662,18 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
    * listen continuously: somebody at the truck presses its wake button and the
    * master hands the command over. The platform authorises; the driver
    * actuates. The response says so plainly rather than implying it is done.
+   *
+   * Gated off by default — see `config.subLockUnlockEnabled`. The refusal
+   * carries a reason a dispatcher can act on, because a bare 403 on a button
+   * that used to work reads as a malfunction and produces a phone call.
    */
   app.post('/api/devices/:id/sublocks/:subId/unlock', async (req, reply) => {
     const id = deviceIdOf(req, reply);
     if (!id) return reply;
+
+    if (!config.subLockUnlockEnabled) return reply.code(409).send(subLockGateRefusal());
+    if (!(await requireUnlockRole(req, reply))) return reply;
+    if (!(await allowUnlockAttempt(req, reply, id))) return reply;
 
     const subId = String((req.params as { subId?: string }).subId ?? '').toUpperCase();
     if (!/^[0-9A-F]{10}$/.test(subId)) {
@@ -852,6 +1036,11 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     const id = deviceIdOf(req, reply);
     if (!id) return reply;
 
+    // Arming an arrival rule IS authorising an unlock — one that fires with
+    // nobody deciding in the moment. It needs the same permission as pressing
+    // the button, not less.
+    if (!(await requireUnlockRole(req, reply))) return reply;
+
     const body = (req.body ?? {}) as {
       locationId?: number;
       name?: string;
@@ -912,6 +1101,13 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     if (!name) name = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
     const includeSubLocks = body.includeSubLocks === true;
 
+    // Refused rather than silently downgraded. An operator who ticked the box
+    // and got a rule back without it would find the valves shut on arrival and
+    // have no idea why.
+    if (includeSubLocks && !config.subLockUnlockEnabled) {
+      return reply.code(409).send(subLockGateRefusal());
+    }
+
     const { rows } = await pool.query<{ id: number }>(
       `INSERT INTO arrival_unlocks (device_id, name, location, radius_m, reason, created_by, expires_at, location_id, include_sublocks)
        VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6, $7,
@@ -938,11 +1134,16 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
   /**
    * Disarm. Kept as a row so the audit trail still shows it existed.
    *
-   * Also cancels the unlock this arrival already queued, if it fired while the
-   * vehicle was asleep and the command is still waiting to be delivered.
-   * Clearing the flag alone left that command live, so the lock opened on the
-   * next wake - minutes or hours after an operator watched the rule disappear
-   * and reasonably concluded nothing more would happen.
+   * Also cancels every unlock this arrival already queued, if it fired while
+   * the vehicle was asleep and the commands are still waiting to be delivered.
+   * Clearing the flag alone left them live, so the lock opened on the next wake
+   * - minutes or hours after an operator watched the rule disappear and
+   * reasonably concluded nothing more would happen.
+   *
+   * "Every" is load-bearing. `arrival_unlocks.triggered_command_id` records
+   * only the master unlock; a rule with sub-locks spawns N more relays whose
+   * ids it never held, so cancelling by that column left them armed and
+   * invisible. Commands now carry the rule that spawned them.
    */
   app.delete('/api/devices/:id/arrivals/:arrivalId', async (req, reply) => {
     const id = deviceIdOf(req, reply);
@@ -950,30 +1151,58 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     const arrivalId = Number((req.params as { arrivalId?: string }).arrivalId);
     if (!Number.isInteger(arrivalId)) return reply.code(400).send({ error: 'invalid_id' });
 
-    const { rows } = await pool.query<{ triggered_command_id: number | null }>(
+    const { rowCount: disarmedCount } = await pool.query(
       `UPDATE arrival_unlocks SET is_armed = false
-        WHERE id = $1 AND device_id = $2 AND is_armed
-        RETURNING triggered_command_id`,
+        WHERE id = $1 AND device_id = $2 AND is_armed`,
       [arrivalId, id],
     );
 
-    // Only commands still awaiting delivery. One already 'sent' is on the wire
-    // and beyond recall, and saying otherwise would be worse than saying
-    // nothing - the operator needs to know to go and physically check.
-    let cancelledCommand: number | null = null;
-    const commandId = rows[0]?.triggered_command_id ?? null;
-    if (commandId) {
-      const { rowCount } = await pool.query(
-        `UPDATE commands SET status = 'expired',
-                last_error = 'cancelled with the arrival rule'
-          WHERE id = $1 AND status IN ('queued', 'approved')`,
-        [commandId],
-      );
-      if (rowCount === 1) cancelledCommand = commandId;
-    }
+    /*
+     * Only commands still awaiting delivery can be cancelled. One already
+     * 'sent' is on the wire and beyond recall, and one that is 'uncertain' may
+     * have opened a valve already. Both are reported back rather than glossed
+     * over: the operator needs to know to go and physically check.
+     */
+    const { rows: outcome } = await pool.query<{
+      id: number;
+      command_type: string;
+      cancelled: boolean;
+      status: string;
+    }>(
+      `WITH spawned AS (
+         SELECT id, command_type, status FROM commands
+          WHERE triggered_by_arrival_id = $1 AND device_id = $2
+       ),
+       cancelled AS (
+         UPDATE commands c
+            SET status = 'expired',
+                last_error = 'cancelled with the arrival rule',
+                failure_cause = 'cancelled'
+           FROM spawned s
+          WHERE c.id = s.id
+            AND c.status IN ('queued', 'approved', 'draft', 'pending_approval')
+          RETURNING c.id
+       )
+       SELECT s.id, s.command_type, s.status,
+              (s.id IN (SELECT id FROM cancelled)) AS cancelled
+         FROM spawned s
+        ORDER BY s.id`,
+      [arrivalId, id],
+    );
 
-    await audit(req, 'arrival_unlock_disarmed', id, { arrivalId, cancelledCommand });
-    return { disarmed: rows.length === 1, cancelledCommand };
+    const cancelled = outcome.filter((c) => c.cancelled).map((c) => c.id);
+    const beyondRecall = outcome
+      .filter((c) => !c.cancelled)
+      .map((c) => ({ id: c.id, type: c.command_type, status: c.status }));
+
+    await audit(req, 'arrival_unlock_disarmed', id, { arrivalId, cancelled, beyondRecall });
+    return {
+      disarmed: disarmedCount === 1,
+      cancelled,
+      // Named so a caller cannot read an empty `cancelled` as "nothing was
+      // queued" when it actually means "everything had already gone out".
+      beyondRecall,
+    };
   });
 
   /**
@@ -1005,7 +1234,10 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const { rowCount } = await pool.query(
-      `UPDATE commands SET status = 'expired', last_error = 'cancelled by operator'
+      `UPDATE commands
+          SET status = 'expired',
+              last_error = 'cancelled by operator',
+              failure_cause = 'cancelled'
         WHERE id = $1 AND status IN ('queued', 'approved', 'draft', 'pending_approval')`,
       [commandId],
     );
@@ -1026,8 +1258,120 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
   });
 }
 
+/**
+ * Why a sub-lock unlock was refused, in words a dispatcher can act on.
+ *
+ * A capability that used to work and now returns a bare error reads as a
+ * broken system, and the next move is a phone call rather than a decision.
+ * Say what is switched off, and that the master lock still works.
+ */
+function subLockGateRefusal(): Record<string, unknown> {
+  return {
+    error: 'sublock_unlock_disabled',
+    reason:
+      'فتح الأقفال الفرعية (صمامات JT709) معطَّل حالياً: لا توجد وسيلة للتأكد من أن الصمام قد فُتح فعلاً. ' +
+      'فتح القفل الرئيسي يعمل كالمعتاد.',
+  };
+}
+
 function isPublic(url: string): boolean {
-  return url.startsWith('/api/login') || url.startsWith('/api/session') || url.startsWith('/api/logout');
+  return (
+    url.startsWith('/api/login') ||
+    url.startsWith('/api/session') ||
+    url.startsWith('/api/logout') ||
+    // Exempt from the blanket hook because it does its own check: open from
+    // loopback, authenticated from anywhere else. See the route.
+    url.startsWith('/api/health')
+  );
+}
+
+/**
+ * Hooks apply to every route in the scope regardless of registration order, so
+ * /api/health has to opt out of the auth hook above and then gate itself.
+ */
+function isLoopback(ip: string): boolean {
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+}
+
+/**
+ * Everything the fleet ramp needs to see in one request.
+ *
+ * Deliberately one round trip per fact rather than one clever query: this runs
+ * on demand, not on the hot path, and each number should be readable on its own
+ * when one of them looks wrong.
+ */
+async function healthReport(): Promise<Record<string, unknown>> {
+  const [gateway, commands, partitions, connected] = await Promise.all([
+    pool.query<{
+      instance: string;
+      sessions: number;
+      listener_connected: boolean;
+      last_sweep_ms: number | null;
+      last_sweep_at: Date | null;
+      stale_seconds: number;
+      started_at: Date;
+    }>(
+      `SELECT instance, sessions, listener_connected, last_sweep_ms, last_sweep_at, started_at,
+              EXTRACT(epoch FROM now() - updated_at)::int AS stale_seconds
+         FROM gateway_health
+        ORDER BY updated_at DESC`,
+    ),
+    pool.query<{ queued: number; oldest_seconds: number | null }>(
+      `SELECT count(*)::int AS queued,
+              EXTRACT(epoch FROM now() - min(requested_at))::int AS oldest_seconds
+         FROM commands
+        WHERE status IN ('queued', 'approved')
+          AND expires_at > now()`,
+    ),
+    // Rows in the default partition mean the monthly partitions ran out — the
+    // data is still there, but it is in the wrong place and retention cannot
+    // drop it by partition. Headroom is how many months of partitions remain.
+    pool.query<{ default_rows: number; headroom_months: number }>(
+      `SELECT (SELECT count(*)::int FROM ONLY positions_default) AS default_rows,
+              (SELECT count(*)::int FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE c.relname ~ '^positions_[0-9]{4}_[0-9]{2}$'
+                 AND n.nspname = current_schema()
+                 AND c.relname >= 'positions_' || to_char(now(), 'YYYY_MM')) AS headroom_months`,
+    ),
+    pool.query<{ connected: number }>(
+      'SELECT count(*)::int AS connected FROM device_state WHERE is_connected',
+    ),
+  ]);
+
+  const g = gateway.rows[0];
+  return {
+    ok: true,
+    api: {
+      pool: {
+        total: pool.totalCount,
+        idle: pool.idleCount,
+        // Non-zero means requests are queueing for a connection — the silent
+        // pool queue, and the first thing to look at under load.
+        waiting: pool.waitingCount,
+      },
+    },
+    gateway: g
+      ? {
+          instance: g.instance,
+          startedAt: g.started_at,
+          sessions: g.sessions,
+          listenerConnected: g.listener_connected,
+          lastSweepMs: g.last_sweep_ms,
+          lastSweepAt: g.last_sweep_at,
+          staleSeconds: g.stale_seconds,
+        }
+      : null,
+    devices: { connected: connected.rows[0]?.connected ?? 0 },
+    commands: {
+      queued: commands.rows[0]?.queued ?? 0,
+      oldestQueuedSeconds: commands.rows[0]?.oldest_seconds ?? null,
+    },
+    partitions: {
+      defaultRows: partitions.rows[0]?.default_rows ?? 0,
+      headroomMonths: partitions.rows[0]?.headroom_months ?? 0,
+    },
+  };
 }
 
 function deviceIdOf(req: FastifyRequest, reply: FastifyReply): string | null {
@@ -1039,8 +1383,82 @@ function deviceIdOf(req: FastifyRequest, reply: FastifyReply): string | null {
   return id;
 }
 
+/**
+ * Who did this, for the audit trail.
+ *
+ * Used to be `operator@${req.ip}` — an address wearing an identity's clothes.
+ * It answered "which machine" and was recorded in the field that is supposed to
+ * answer "which person", on the trail the Ministry relies on to say who opened
+ * a tanker. The address is still recorded, in audit_log.ip_address, where it
+ * belongs and where it is not mistaken for attribution.
+ *
+ * Resolved from the request, which the auth hook has already populated. With
+ * auth disabled there is genuinely nobody, and it says so rather than inventing
+ * a name.
+ */
 function actorOf(req: FastifyRequest): string {
-  return `operator@${req.ip}`;
+  const user = req.zeeUser;
+  if (user) return String(user.id);
+  return apiConfig.authDisabled ? 'auth-disabled' : 'unknown';
+}
+
+/**
+ * The account behind this request, cached on it.
+ *
+ * The auth hook resolves it once per request; everything after reads the cache.
+ * Without that, every route that audits would go back to the database for the
+ * same row.
+ */
+async function currentUser(req: FastifyRequest): Promise<User | null> {
+  if (req.zeeUser !== undefined) return req.zeeUser;
+  const id = apiConfig.sessionUserId(req);
+  const user = id === null ? null : await findActiveById(id);
+  req.zeeUser = user;
+  return user;
+}
+
+/**
+ * Refuse anything that opens a lock to an account that may only watch.
+ *
+ * Viewing where the fleet is and opening a valve on a tanker full of petrol are
+ * different kinds of act. This is the only role distinction there is, and it is
+ * the one worth having before a pilot.
+ */
+/**
+ * Bound how fast one operator, or one machine, can open valves.
+ *
+ * Not a fraud control — a permitted operator unlocking a permitted truck is the
+ * point of the platform. It is a ceiling on a script or a stuck retry loop
+ * working through the fleet faster than anyone could notice, on a system where
+ * each call opens a valve on a tanker.
+ */
+async function allowUnlockAttempt(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  deviceId: string,
+): Promise<boolean> {
+  const actor = actorOf(req);
+  if (unlockByUser.allow(actor) && unlockByIp.allow(req.ip)) return true;
+
+  await audit(req, 'unlock_rate_limited', deviceId, {});
+  reply.code(429).send({
+    error: 'too_many_unlocks',
+    reason: 'عدد كبير من طلبات الفتح خلال وقت قصير. انتظر قليلاً ثم أعد المحاولة.',
+  });
+  return false;
+}
+
+async function requireUnlockRole(req: FastifyRequest, reply: FastifyReply): Promise<boolean> {
+  if (apiConfig.authDisabled) return true;
+  const user = await currentUser(req);
+  if (user?.may_unlock) return true;
+
+  await audit(req, 'unlock_forbidden', null, { url: req.url });
+  reply.code(403).send({
+    error: 'unlock_not_permitted',
+    reason: 'هذا الحساب مخوَّل بالمتابعة فقط ولا يملك صلاحية فتح الأقفال.',
+  });
+  return false;
 }
 
 async function audit(

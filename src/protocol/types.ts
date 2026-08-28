@@ -191,6 +191,19 @@ export interface CommandResponseFrame {
   deviceId: string;
   command: string;
   params: string[];
+  /**
+   * The serial from a WLNET reply — the field before the WLNET word, which is
+   * where the serial sits in the command we sent. Null for P-commands, which
+   * carry no serial at all.
+   *
+   * Whether the device echoes back the serial it was given is NOT documented:
+   * the manual says only that the two serials of consecutive commands must
+   * differ, and that the device "normally ignores this number and replies as
+   * per command". So this may or may not correspond to a command we sent, and
+   * nothing may depend on it doing so. It is used only as a tie-breaker, where
+   * it singles out exactly one open command.
+   */
+  serial: string | null;
   raw: string;
 }
 

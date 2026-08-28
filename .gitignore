@@ -9,3 +9,8 @@ dist/
 # and you want them versioned, delete these two lines.
 *.pdf
 .cache/
+
+# Local agent/CLI tooling, not part of the project.
+.agents/
+.claude/
+skills-lock.json

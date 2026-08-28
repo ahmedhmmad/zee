@@ -355,6 +355,21 @@ async function createGoogleMap(container, apiKey, onMarkerClick, theme) {
     panTo(lat, lon) {
       map.panTo({ lat, lng: lon });
     },
+    /**
+     * The visible extent, as { south, west, north, east }, or null before the
+     * map has one.
+     *
+     * The console uses it to decide what is worth animating. At 3,000 markers
+     * the tween loop is the frame budget, and nearly all of it goes on trucks
+     * nobody can see.
+     */
+    getBounds() {
+      const b = map.getBounds();
+      if (!b) return null;
+      const sw = b.getSouthWest();
+      const ne = b.getNorthEast();
+      return { south: sw.lat(), west: sw.lng(), north: ne.lat(), east: ne.lng() };
+    },
     raw: map,
   };
 }
@@ -709,6 +724,12 @@ function createOsmMap(container, onMarkerClick, basemap = 'osm', arcgisKey = '')
     },
     panTo(lat, lon) {
       map.panTo([lon, lat], { duration: 600 });
+    },
+    /** See the Google adapter's getBounds. */
+    getBounds() {
+      const b = map.getBounds();
+      if (!b) return null;
+      return { south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() };
     },
     raw: map,
   };
