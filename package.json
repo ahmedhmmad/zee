@@ -15,7 +15,8 @@
     "typecheck": "tsc --noEmit",
     "api": "node --env-file-if-exists=.env src/api/server.ts",
     "migrate": "node --env-file-if-exists=.env scripts/migrate.ts",
-    "user:add": "node --env-file-if-exists=.env scripts/create-user.ts"
+    "user:add": "node --env-file-if-exists=.env scripts/create-user.ts",
+    "user": "node --env-file-if-exists=.env scripts/manage-user.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",

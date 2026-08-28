@@ -26,6 +26,25 @@ function fail(message: string): never {
   process.exit(1);
 }
 
+/*
+ * `npm run user:add ahmed pw --unlock` without the `--` separator does not do
+ * what it looks like: npm eats the flag as one of its own config options and
+ * this script never sees it. The account is then created view-only while the
+ * person who ran it believes they granted unlock permission.
+ *
+ * npm leaves the swallowed flag in the environment, which is how we can tell
+ * the difference between "they did not ask for it" and "they asked and npm ate
+ * it". Refuse rather than guess: silently granting valve-opening permission
+ * from an inferred flag is the wrong direction to be clever in.
+ */
+if (!mayUnlock && process.env.npm_config_unlock) {
+  fail(
+    'It looks like you passed --unlock but npm consumed it as its own option.\n' +
+      'Nothing has been created. Add the -- separator:\n' +
+      `  npm run user:add -- ${username ?? '<username>'} '<password>' --unlock`,
+  );
+}
+
 if (!username || !password) {
   fail('usage: npm run user:add -- <username> <password> [--unlock]');
 }
