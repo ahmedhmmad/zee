@@ -57,13 +57,38 @@ COMMENT ON TABLE users IS
 -- The trail that already exists.
 -- ---------------------------------------------------------------------------
 
--- Old rows say `operator@10.0.0.5`, which is an address wearing an identity's
--- clothes. Move the address to the column for addresses, then say plainly that
--- the actor is not known — an honest gap is worth more than a field that looks
--- like attribution and is not.
-UPDATE audit_log
-   SET ip_address = COALESCE(ip_address, substring(actor from '^operator@(.+)$'))
- WHERE actor LIKE 'operator@%';
+/*
+ * Old rows say `operator@10.0.0.5`, which is an address wearing an identity's
+ * clothes. Move the address to the column for addresses, then say plainly that
+ * the actor is not known — an honest gap is worth more than a field that looks
+ * like attribution and is not.
+ *
+ * Row by row with the cast guarded, because ip_address is `inet` and the text
+ * after the @ is whatever Fastify's req.ip happened to be. That is normally an
+ * address, but it does not have to be, and one unparseable value in a
+ * set-based UPDATE would abort this whole migration. A row whose address
+ * cannot be recovered keeps a NULL there and still gets its actor corrected
+ * below — losing the address is a smaller loss than leaving the trail claiming
+ * an IP is a person.
+ */
+DO $$
+DECLARE
+  r record;
+BEGIN
+  FOR r IN
+    SELECT id, substring(actor from '^operator@(.+)$') AS candidate
+      FROM audit_log
+     WHERE actor LIKE 'operator@%'
+       AND ip_address IS NULL
+  LOOP
+    BEGIN
+      UPDATE audit_log SET ip_address = r.candidate::inet WHERE id = r.id;
+    EXCEPTION WHEN invalid_text_representation THEN
+      -- Not an address. Leave it null rather than failing the migration.
+      NULL;
+    END;
+  END LOOP;
+END $$;
 
 UPDATE audit_log
    SET actor = 'unknown-legacy'
