@@ -133,14 +133,25 @@ test('the animation loop skips markers that are not moving', () => {
   assert.match(run[0]!, /a\.settled = true/);
 });
 
-test('every map adapter can report its viewport', () => {
-  // Added to the adapters rather than reaching past them: the console must not
-  // learn which provider it is talking to.
-  for (const f of ['public/map.js', 'public/map-arcgis.js']) {
-    const src = read(f);
-    const count = (src.match(/getBounds\(\) \{/g) ?? []).length;
-    assert.ok(count >= 1, `${f} has no getBounds on its adapter`);
-  }
-  // map.js carries two adapters — Google and MapLibre — and both need it.
-  assert.equal((read('public/map.js').match(/getBounds\(\) \{/g) ?? []).length, 2);
+test('the map adapter reports its own viewport', () => {
+  /*
+   * On the adapter rather than reached past it: the culling in syncMarkers asks
+   * the map what is visible and must not learn which library it is talking to.
+   *
+   * There was one adapter per provider when this was written — Google, ArcGIS
+   * and MapLibre — and it counted all three. There is one now, and the rule it
+   * protects is unchanged: whatever the map is built on, the console asks it
+   * through this interface.
+   */
+  const src = read('public/map.js');
+  assert.equal(
+    (src.match(/getBounds\(\) \{/g) ?? []).length,
+    1,
+    'public/map.js must expose getBounds on its adapter',
+  );
+  assert.equal(
+    src.includes('map-arcgis.js'),
+    false,
+    'the ArcGIS adapter is gone; nothing should still import it',
+  );
 });

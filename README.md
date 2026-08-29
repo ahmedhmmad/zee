@@ -211,27 +211,30 @@ own server hold the token and re-serve the JSON — a token in browser JavaScrip
 is readable by anyone who views the page source, and with it the live position
 of every tanker.
 
-## Basemaps
+## The map
 
-Three, chosen per operator from the picker on the map and remembered locally:
+One basemap, one library: MapLibre over OpenStreetMap, with every tile proxied
+through `/api/tiles/osm/{z}/{x}/{y}.png` and cached on disk, because tile hosts
+are not reliably reachable from Libya. No key, no billing account, no external
+dependency in the browser.
 
-| Provider | Notes |
-|---|---|
-| **Google** | Best Libyan street data. Needs an API key and a billing account. |
-| **Esri** | Satellite imagery, free, no key. Paired with Esri's transparent places layer, or it is unreadable. |
-| **OpenStreetMap** | Free, no key. Place names for Libya are dated. |
+This replaced three implementations behind one adapter interface — Google, the
+ArcGIS SDK and this one — with a picker to choose between them. The partner
+platform this console now shares a data shape with draws its own map the same
+way, so an operator moving between the two systems sees one map behaving one
+way, and marker code written against one runs against the other.
 
-All raster tiles are proxied through `/api/tiles/<provider>/{z}/{x}/{y}.png`
-and cached on disk, because tile hosts are not reliably reachable from Libya.
-Note that providers disagree about tile URLs - OSM is `{z}/{x}/{y}.png`, Esri
-is `{z}/{y}/{x}` with no extension and returns **JPEG** - so the proxy holds a
-template per provider and reads the content type back from the bytes. Swapping
-only the hostname fetches transposed tiles: a map that renders perfectly and
-shows the wrong part of the world.
+What that gave up: Google's Libyan street data, which is better than OSM's, and
+the Esri satellite layer. The tile proxy still carries its Esri provider and the
+test that pins the axis order — OSM is `{z}/{x}/{y}.png`, Esri is `{z}/{y}/{x}`
+with no extension and returns **JPEG**, and swapping only the hostname fetches
+transposed tiles: a map that renders perfectly and shows the wrong part of the
+world. So imagery is one entry in `RASTER_BASEMAPS` away, and nothing
+server-side would have to come back with it.
 
-Set the default with `TILE_PROVIDER` in `.env`. Google is used only when a key
-is configured; if it fails to load, the map falls back to Esri imagery rather
-than to a blank panel.
+`ARCGIS_API_KEY` remains, and is not a basemap key. It buys one thing: the road
+route drawn to an arrival point, from Esri's routing service. Without it the
+destination still appears, joined by a straight line.
 
 ## Evaluation period
 

@@ -169,8 +169,7 @@ fi
 EMAIL=""
 [ $IS_IP -eq 1 ] || ask EMAIL "Email for certificate notices" "eng.ahammad7@gmail.com"
 ask_secret AUTH_PASSWORD "Console login password (you will use this to sign in)"
-ask GMAPS_KEY  "Google Maps API key (blank to use OpenStreetMap)" ""
-ask ARCGIS_KEY "ArcGIS API key from the client's Esri licence (blank to skip)" ""
+ask ARCGIS_KEY "ArcGIS key for road routes to arrival points (blank to skip)" ""
 ask DUMP_FILE  "Path to database dump from the old server (blank for empty DB)" ""
 
 # Evaluation period. A disclosed pilot term, not a hidden switch: after this
@@ -316,12 +315,10 @@ info "Restore      ${DUMP_FILE:-none — starting with an empty database}"
 # Spelled out rather than done with ${x:+a}${x:-b}: that pair reads as an
 # if/else but is not one - ${x:-b} substitutes x's own VALUE whenever x is set,
 # so both halves fire and the value is appended to the label. Here that printed
-# the Google Maps key to the terminal in a script whose whole premise is that
+# an API key to the terminal in a script whose whole premise is that
 # secrets are never displayed.
 if [ -n "$ARCGIS_KEY" ]; then
-  info "Maps         Esri/ArcGIS (licensed)$([ -n "$GMAPS_KEY" ] && echo ", Google also available")"
-elif [ -n "$GMAPS_KEY" ]; then
-  info "Maps         Google"
+  info "Maps         OpenStreetMap, with Esri road routes to arrival points"
 else
   info "Maps         OpenStreetMap"
 fi
@@ -511,9 +508,7 @@ AUTH_PASSWORD=$AUTH_PASSWORD
 COOKIE_SECRET=$COOKIE_SECRET
 LOG_LEVEL=info
 TILE_CACHE_DIR=$APP_DIR/.cache/tiles
-GOOGLE_MAPS_API_KEY=$GMAPS_KEY
 ARCGIS_API_KEY=$ARCGIS_KEY
-ARCGIS_VERSION=4.31
 
 # Evaluation period (disclosed pilot term). After this date the platform stops
 # serving until the date is updated and the services restarted. Blank = no

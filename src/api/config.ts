@@ -53,36 +53,18 @@ if (authDisabled) {
 
 export const apiConfig = {
   /**
-   * Google Maps browser key. Optional — without it the UI falls back to the
-   * proxied OpenStreetMap basemap.
+   * ArcGIS key, from the client's own Esri licence. Optional.
    *
-   * Google's terms forbid proxying or caching their tiles, so unlike OSM this
-   * cannot be served through our own gateway: each browser talks to Google
-   * directly. Restrict the key by HTTP referrer in the Cloud console, since a
-   * browser key is by nature public.
-   */
-  googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY ?? '',
-
-  /**
-   * ArcGIS Maps SDK key, from the client's own Esri licence.
+   * No longer a basemap: the console draws one map, MapLibre over proxied
+   * OpenStreetMap. This key buys exactly one thing — the road route drawn to
+   * an arrival point, from Esri's routing service. Without it the destination
+   * still appears, joined by a straight line.
    *
-   * Like the Google key this is a browser key and therefore public by nature:
-   * it is sent to every console that loads the map. Restrict it in the ArcGIS
-   * Location Platform console by referrer, and note that Esri keys carry
-   * per-service scopes - a key without the basemap scope authenticates fine
-   * and then serves no tiles, which looks like a broken map rather than a
-   * misconfigured key.
+   * A browser key, and therefore public by nature: it is sent to every console
+   * that loads the map. Restrict it by referrer in the ArcGIS Location
+   * Platform console.
    */
   arcgisApiKey: process.env.ARCGIS_API_KEY ?? '',
-
-  /**
-   * Which SDK release to load from Esri's CDN.
-   *
-   * Configurable because Esri retires CDN versions on their own schedule, and
-   * when one goes the console breaks for everyone at once. Bumping an .env
-   * value and restarting is a five-minute fix; a code release is not.
-   */
-  arcgisVersion: process.env.ARCGIS_VERSION || '4.31',
 
   port: Number(process.env.API_PORT ?? 3333),
   // Bind loopback only: Nginx is the sole ingress, so the app must not be

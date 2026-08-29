@@ -11,11 +11,9 @@ const state = {
   locations: [],
   selectedId: null,
   map: null,
-  // Cached from /api/config so the basemap can be rebuilt on switch without
-  // refetching it.
-  googleMapsApiKey: '',
+  // Cached from /api/config. Not a basemap key — it buys the road route drawn
+  // to an arrival point, and nothing else.
   arcgisApiKey: '',
-  arcgisVersion: '',
   // Whether valve sub-lock unlocking is switched on at all. Off means the
   // controls are hidden — the API refuses regardless, so this only spares an
   // operator a button that cannot work.
@@ -325,120 +323,21 @@ $('map-theme').addEventListener('click', () => {
 // palette while Google's library downloads.
 document.documentElement.dataset.theme = mapTheme();
 
-/**
- * Which basemap the operator chose, remembered across visits.
- *
- * Stored locally rather than server-side: it is a display preference, and
- * different people at different screens reasonably want different answers.
- * Defaults to Google when a key exists, since its Libyan street data is the
- * reason it was chosen - falling back to imagery only if that key stops working.
- */
-function chosenBasemap(hasGoogleKey, hasArcgisKey = false) {
-  const saved = localStorage.getItem('zee.basemap');
-  // A saved choice whose key has since been removed would leave the operator
-  // staring at a blank panel, so fall through to imagery instead.
-  if (saved === 'google' && !hasGoogleKey) return hasArcgisKey ? 'arcgis' : 'esri';
-  if (saved === 'arcgis' && !hasArcgisKey) return 'esri';
-  if (saved) return saved;
-  // Esri by default. The client standardises on it, so that is what should be
-  // on screen when the console is opened cold - Google stays available in the
-  // picker but is no longer what anyone lands on. The licensed ArcGIS basemap
-  // takes precedence over the free imagery whenever a key is configured.
-  return hasArcgisKey ? 'arcgis' : 'esri';
-}
-
 async function initMap() {
   if (state.map) return;
-  const { googleMapsApiKey, arcgisApiKey, arcgisVersion, subLockUnlockEnabled } =
-    await api('/api/config');
-  state.googleMapsApiKey = googleMapsApiKey;
+  const { arcgisApiKey, subLockUnlockEnabled } = await api('/api/config');
   state.arcgisApiKey = arcgisApiKey;
-  state.arcgisVersion = arcgisVersion;
   state.subLockUnlockEnabled = subLockUnlockEnabled === true;
 
-  // The arrival rule's sub-lock option only exists where the capability does.
+  // The arrival form's sub-lock option only exists where the capability does.
   // Offering a tick box the server will refuse produces a rule the operator
   // thinks covers the valves and does not.
   const subLockLine = $('arrival-sublocks-line');
   if (subLockLine) subLockLine.hidden = !state.subLockUnlockEnabled;
-  const { createMap } = await import('/map.js');
-  state.map = await createMap(
-    document.getElementById('map'),
-    googleMapsApiKey,
-    selectDevice,
-    mapTheme(),
-    chosenBasemap(googleMapsApiKey, arcgisApiKey),
-    { apiKey: arcgisApiKey, version: arcgisVersion },
-  );
-  console.info(`[map] using ${state.map.provider}`);
-  // Raster tiles cannot be restyled, so the button only exists for Google.
-  renderThemeButton();
-  renderBasemapPicker();
-}
-
-/**
- * Basemap picker.
- *
- * Rebuilding the map is the simplest correct way to switch: Google and
- * MapLibre are different libraries with different DOM, so there is nothing to
- * mutate in place. The selected vehicle is reapplied afterwards so the switch
- * does not silently lose what the operator was looking at.
- */
-async function renderBasemapPicker() {
-  const { availableBasemaps } = await import('/map.js');
-  const options = availableBasemaps(
-    Boolean(state.googleMapsApiKey),
-    Boolean(state.arcgisApiKey),
-  );
-  let host = document.getElementById('basemap-picker');
-  if (!host) {
-    host = document.createElement('div');
-    host.id = 'basemap-picker';
-    host.className = 'basemap-picker';
-    document.getElementById('map').parentElement.appendChild(host);
-  }
-  host.innerHTML = '';
-  for (const opt of options) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.textContent = opt.label;
-    b.className = opt.id === state.map.provider ? 'active' : '';
-    b.addEventListener('click', () => switchBasemap(opt.id));
-    host.appendChild(b);
-  }
-}
-
-async function switchBasemap(provider) {
-  if (!state.map || state.map.provider === provider) return;
-  localStorage.setItem('zee.basemap', provider);
-
-  const previous = state.selectedId;
-  const container = document.getElementById('map');
-
-  // Stop the marker animation before the map goes away, rather than leaving a
-  // frame to fire against a half-rebuilt console.
-  if (animFrame) {
-    cancelAnimationFrame(animFrame);
-    animFrame = null;
-  }
-
-  container.innerHTML = '';
-  state.map = null;
 
   const { createMap } = await import('/map.js');
-  state.map = await createMap(
-    container,
-    state.googleMapsApiKey,
-    selectDevice,
-    mapTheme(),
-    provider,
-    { apiKey: state.arcgisApiKey, version: state.arcgisVersion },
-  );
-  console.info(`[map] switched to ${state.map.provider}`);
+  state.map = await createMap(document.getElementById('map'), selectDevice, arcgisApiKey);
   renderThemeButton();
-  renderBasemapPicker();
-  syncMarkers();
-  if (previous) selectDevice(previous);
 }
 
 /**
@@ -487,9 +386,8 @@ function runAnimation() {
   // the session, while the rest of the console carried on working.
   animFrame = null;
 
-  // Switching basemap nulls state.map and rebuilds it across an await. A frame
-  // queued before that lands in the gap with nothing to draw on; the
-  // syncMarkers() call after the rebuild starts the loop again.
+  // The map is null until initMap resolves, and a frame queued before that
+  // lands in the gap with nothing to draw on.
   const map = state.map;
   if (!map) return;
 
@@ -1983,18 +1881,10 @@ async function openHistory() {
   // Its own map instance: past travel is a review activity, and drawing it on
   // the live map buried the present under the past.
   if (!historyMap) {
-    const { googleMapsApiKey, arcgisApiKey, arcgisVersion } = await api('/api/config');
+    const { arcgisApiKey } = await api('/api/config');
     const { createMap } = await import('/map.js');
-    // Follows the same basemap the operator chose on the live map, so the
-    // history view does not silently show a different world.
-    historyMap = await createMap(
-      $('history-map'),
-      googleMapsApiKey,
-      () => {},
-      mapTheme(),
-      chosenBasemap(googleMapsApiKey, arcgisApiKey),
-      { apiKey: arcgisApiKey, version: arcgisVersion },
-    );
+    // The same basemap as the live map, necessarily: there is only one.
+    historyMap = await createMap($('history-map'), () => {}, arcgisApiKey);
   }
   loadHistory();
 }

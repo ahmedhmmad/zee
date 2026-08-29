@@ -191,9 +191,8 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
 
   /** Front-end configuration. Behind the session check, like everything else. */
   app.get('/api/config', async () => ({
-    googleMapsApiKey: apiConfig.googleMapsApiKey || null,
+    // Not a basemap key — see apiConfig. The console draws one map.
     arcgisApiKey: apiConfig.arcgisApiKey || null,
-    arcgisVersion: apiConfig.arcgisVersion,
     // The console hides the sub-lock unlock controls when this is false. The
     // routes refuse regardless — hiding a control is a courtesy, never the
     // gate itself.
