@@ -599,7 +599,7 @@ export async function claimPendingCommands(deviceId: string): Promise<PendingCom
         ORDER BY requested_at ASC
         LIMIT 20
         FOR UPDATE SKIP LOCKED
-     )
+     ),
      upd AS (
        UPDATE commands c
           SET status = 'sent', sent_at = now(), attempts = c.attempts + 1

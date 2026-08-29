@@ -1922,13 +1922,23 @@ async function openHistory() {
 /** Trailing window, or an explicit from/to when "فترة محددة" is chosen. */
 function historyRange() {
   const raw = $('hist-range').value;
-  if (raw !== 'custom') return { query: `hours=${Number(raw)}`, label: rangeLabel(Number(raw)) };
+  if (raw !== 'custom') {
+    const hours = Number(raw);
+    return {
+      query: `hours=${hours}`,
+      label: rangeLabel(hours),
+      from: Date.now() - hours * 3600 * 1000,
+      to: null,
+    };
+  }
 
   // datetime-local gives a wall-clock string with no zone; the browser reads
   // it in the operator's own zone, which is what they meant by typing it.
   const from = $('hist-from').value ? new Date($('hist-from').value) : null;
   const to = $('hist-to').value ? new Date($('hist-to').value) : null;
-  if (!from && !to) return { query: 'hours=12', label: rangeLabel(12) };
+  if (!from && !to) {
+    return { query: 'hours=12', label: rangeLabel(12), from: Date.now() - 12 * 3600 * 1000, to: null };
+  }
 
   const params = new URLSearchParams();
   if (from) params.set('from', from.toISOString());
@@ -1936,6 +1946,8 @@ function historyRange() {
   return {
     query: params.toString(),
     label: `${from ? fmtDateTime(from.toISOString()) : '…'} — ${to ? fmtDateTime(to.toISOString()) : 'الآن'}`,
+    from: from ? from.getTime() : null,
+    to: to ? to.getTime() : null,
   };
 }
 
@@ -2005,10 +2017,15 @@ async function loadHistory() {
 
   // Lock activity for the same window, so the review reads as one story:
   // where it drove, and what the lock did along the way.
-  const since = Date.now() - hours * 3600 * 1000;
-  const events = (await api(`/api/devices/${deviceId}/events`).catch(() => [])).filter(
-    (e) => new Date(e.reported_at) >= since,
-  );
+  //
+  // The bounds come from the same range object the track was fetched with.
+  // Deriving them a second time here is what left this referencing an `hours`
+  // that stopped existing when the custom range landed: it threw on every
+  // render of this page, after the trail was drawn but before any event was.
+  const events = (await api(`/api/devices/${deviceId}/events`).catch(() => [])).filter((e) => {
+    const t = new Date(e.reported_at).getTime();
+    return (range.from === null || t >= range.from) && (range.to === null || t <= range.to);
+  });
   $('history-events').innerHTML = events.length
     ? events
         .map((e) => {

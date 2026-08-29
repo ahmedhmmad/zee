@@ -273,7 +273,14 @@ async function main(): Promise<void> {
     (deviceId) => {
       const session = sessions.get(deviceId);
       if (session) {
-        void session.drainCommands();
+        // Caught, exactly like the sweep's drain below. Nothing awaits this
+        // one: it is a side errand of a notification. An unhandled rejection
+        // here is an unhandled rejection in the process, and Node ends the
+        // process on one — so a failing command query stops being a command
+        // problem and becomes every truck's telemetry stopping.
+        void session.drainCommands().catch((err) => {
+          console.error(`[gateway] drain failed for ${deviceId}`, (err as Error).message);
+        });
       } else {
         console.log(`[gateway] ${deviceId} command queued but device is offline; will send on connect`);
       }

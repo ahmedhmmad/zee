@@ -333,7 +333,13 @@ export class DeviceSession {
       // Devices sleep, so this is usually the only moment we can reach them.
       // Not awaited: the queued commands go out alongside the handling of this
       // frame rather than delaying its ack behind them.
-      void this.drainCommands();
+      // Caught for the same reason as the NOTIFY drain in index.ts: nothing
+      // awaits this, so a throw is an unhandled rejection and Node ends the
+      // process on one. Telemetry from this truck — and from every other truck
+      // on this gateway — must not depend on its command queue answering.
+      void this.drainCommands().catch((err) => {
+        this.log(`drain on connect failed: ${(err as Error).message}`, true);
+      });
     } else if (frame.deviceId !== this.#deviceId) {
       // One socket must carry one device. A change mid-stream means either a
       // corrupt frame or someone splicing traffic.
