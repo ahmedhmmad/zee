@@ -1859,6 +1859,78 @@ $('open-locations').addEventListener('click', () => {
 });
 $('close-locations').addEventListener('click', () => ($('locations-page').hidden = true));
 
+// --- External integration ---------------------------------------------------
+
+/*
+ * What a partner receives, shown to the operator.
+ *
+ * Rendered from /api/integration-preview, which runs the partner feed's own
+ * query through the partner feed's own shaping functions. It is the feed, not a
+ * description of one: a field that stops being published stops appearing here
+ * in the same deploy, so nobody hands over a token on the strength of a page
+ * that has drifted from what the other side actually gets.
+ */
+async function loadIntegration() {
+  const format = $('integration-format').value;
+  const view = $('integration-json');
+  view.textContent = '…';
+
+  try {
+    const body = await api(`/api/integration-preview?format=${format}`);
+    // Two-space indent: this gets read on screen and pasted into a message to
+    // whoever is building the other side.
+    view.textContent = JSON.stringify(body, null, 2);
+  } catch {
+    view.textContent = '';
+    toast('تعذّر قراءة البيانات', 'bad');
+  }
+
+  const tokens = await api('/api/integration-tokens').catch(() => []);
+  const list = $('integration-tokens');
+  list.innerHTML = tokens.length
+    ? tokens
+        .map(
+          (t) => `<li>
+            <div class="row">
+              <strong>${escapeHtml(t.name)}</strong>
+              <span class="pill ${t.is_active ? 'pill-ok' : 'pill-muted'}">
+                ${t.is_active ? 'فعّال' : 'موقوف'}
+              </span>
+            </div>
+            <div class="muted">
+              ${
+                t.last_used_at
+                  ? `آخر استخدام ${fmtDateTime(t.last_used_at)} · ${t.request_count} طلب`
+                  : 'لم يُستخدم بعد'
+              }
+              · أُنشئ ${fmtDateTime(t.created_at)}${t.created_by ? ` بواسطة ${escapeHtml(t.created_by)}` : ''}
+            </div>
+          </li>`,
+        )
+        .join('')
+    : '<li class="empty">لا توجد مفاتيح — تُصدر من الطرفية على الخادم</li>';
+}
+
+$('open-integration').addEventListener('click', () => {
+  $('integration-page').hidden = false;
+  loadIntegration();
+});
+$('close-integration').addEventListener('click', () => ($('integration-page').hidden = true));
+$('integration-format').addEventListener('change', loadIntegration);
+$('integration-refresh').addEventListener('click', loadIntegration);
+
+$('integration-copy').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText($('integration-json').textContent);
+    toast('نُسخت البيانات', 'ok');
+  } catch {
+    // Clipboard access is refused outside a secure context, and the console is
+    // reachable over plain HTTP when it is reached by IP. Say so rather than
+    // failing silently — the text is on screen and can be selected by hand.
+    toast('تعذّر النسخ — حدّد النص وانسخه يدوياً', 'bad');
+  }
+});
+
 $('location-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const coords = parseCoords($('loc-coords').value);

@@ -41,6 +41,7 @@
       <button id="open-devices" class="btn btn-ghost">🚛 الأجهزة</button>
       <button id="open-tracking" class="btn btn-ghost">⚙️ إعدادات التتبع</button>
       <button id="open-locations" class="btn btn-ghost">📍 المواقع</button>
+      <button id="open-integration" class="btn btn-ghost">🔗 الربط الخارجي</button>
       <button id="map-theme" class="btn btn-ghost" hidden
               title="تبديل مظهر الخريطة بين الداكن والفاتح"></button>
       <span id="conn-status" class="pill pill-muted">جارٍ الاتصال…</span>
@@ -496,6 +497,54 @@
   </form>
 
   <ul id="locations-list" class="locations-list"></ul>
+</div>
+
+<!-- الربط الخارجي: ما تستقبله الأنظمة الأخرى -->
+<div id="integration-page" class="page" hidden>
+  <div class="page-head">
+    <h2>الربط الخارجي</h2>
+    <button id="close-integration" class="btn btn-ghost">رجوع</button>
+  </div>
+
+  <p class="muted page-intro">
+    هذه هي البيانات التي يستلمها أي نظام خارجي مربوط بالمنصة — بصيغة JSON، للقراءة
+    فقط. النظام الآخر يرسم الخريطة عنده كما يشاء، أما الفتح والتحكم فيبقيان هنا وحدهما.
+    ما تراه في الأسفل هو نفسه ما يصل إليهم حرفياً، لا وصفٌ له.
+  </p>
+
+  <div class="integration-endpoints">
+    <h3>العناوين</h3>
+    <ul class="endpoint-list">
+      <li><code class="ltr-inline">GET /api/v1/vehicles</code> — الحالة الحالية لكل مركبة</li>
+      <li><code class="ltr-inline">GET /api/v1/vehicles.geojson</code> — نفس البيانات بصيغة GeoJSON</li>
+      <li><code class="ltr-inline">GET /api/v1/ping</code> — للتأكد أن المفتاح يعمل قبل بدء الربط</li>
+    </ul>
+    <p class="muted">
+      كل طلب يحمل ترويسة
+      <code class="ltr-inline">Authorization: Bearer &lt;token&gt;</code>.
+      المفتاح يُصدر من الطرفية على الخادم، ويُعرض مرة واحدة فقط.
+    </p>
+  </div>
+
+  <div class="page-head page-head-sub">
+    <h3>البيانات</h3>
+    <div class="integration-controls">
+      <select id="integration-format">
+        <option value="json" selected>JSON</option>
+        <option value="geojson">GeoJSON</option>
+      </select>
+      <button id="integration-refresh" class="btn btn-ghost btn-xs">تحديث</button>
+      <button id="integration-copy" class="btn btn-ghost btn-xs">نسخ</button>
+    </div>
+  </div>
+  <pre id="integration-json" class="json-view ltr-input" dir="ltr"></pre>
+
+  <h3>المفاتيح الصادرة</h3>
+  <p class="muted">
+    لا يمكن عرض المفتاح نفسه — المنصة تحفظ بصمته فقط، لا هو. عمود «آخر استخدام»
+    هو ما يفرّق بين «النظام الآخر لا يستطيع الوصول إلينا» و«لم يحاول بعد».
+  </p>
+  <ul id="integration-tokens" class="locations-list"></ul>
 </div>
 
 <!-- تأكيد فتح القفل الفرعي -->

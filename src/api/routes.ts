@@ -45,6 +45,8 @@ const unlockByIp = new RateLimiter(20, 60_000);
 const DUMMY_HASH = await hashPassword(crypto.randomUUID());
 import { tileRoutes } from './tiles.ts';
 import { fetchDevices } from './devices-query.ts';
+import { fetchIntegrationVehicles } from './integration.ts';
+import { toFeatureCollection } from './integration-shape.ts';
 import { encode } from '../protocol/index.ts';
 
 const DEVICE_ID = /^\d{10}$/;
@@ -199,6 +201,48 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
   }));
 
   app.get('/api/devices', async () => fetchDevices());
+
+  /**
+   * What a partner receives, shown to the operator.
+   *
+   * The same call the token-authenticated feed makes, through the same shaping
+   * functions — not a description of it. Anyone handing a partner a token can
+   * see the exact bytes that partner will get, and a field that stops being
+   * published stops appearing here in the same deploy.
+   *
+   * Behind the session cookie like everything else in this scope. It publishes
+   * nothing new: an operator already sees all of this, and rather less of it
+   * than /api/devices carries.
+   */
+  app.get('/api/integration-preview', async (req) => {
+    const vehicles = await fetchIntegrationVehicles();
+    if ((req.query as { format?: string }).format === 'geojson') {
+      return toFeatureCollection(vehicles);
+    }
+    return { generatedAt: new Date().toISOString(), count: vehicles.length, vehicles };
+  });
+
+  /**
+   * Who holds a token, and whether they are actually using it.
+   *
+   * Only the SHA-256 of a token is stored, so no token can be shown here — by
+   * design, and it is why this lists rather than reveals. `last_used_at` is the
+   * field that matters during a rollout: it separates "the partner cannot reach
+   * us" from "the partner has not tried yet", which otherwise look identical
+   * from this side.
+   *
+   * Issuing stays on the CLI (scripts/create-api-token.ts): a token is printed
+   * once and never recoverable, which is a poor fit for a page that can be
+   * reloaded, and granting fleet-wide visibility deserves shell access.
+   */
+  app.get('/api/integration-tokens', async () => {
+    const { rows } = await pool.query(
+      `SELECT id, name, is_active, created_at, created_by, last_used_at, last_used_ip, request_count
+         FROM api_tokens
+        ORDER BY is_active DESC, created_at DESC`,
+    );
+    return rows;
+  });
 
   /**
    * Track points, either over a trailing window (`hours`) or between two

@@ -181,6 +181,18 @@ Vehicles without a GPS fix are returned with a `null` geometry rather than
 dropped, so a partner can tell "present but unlocatable" from "no longer in
 the fleet".
 
+Each vehicle carries position, speed, heading, battery, `locked`,
+`ropeInserted`, `alarms`, the newest lock event (`lastEvent` — of *any* kind,
+not only an unlock), and the JT709 valve sub-locks bound to it. A sub-lock's
+`locked` is three-state: `true`, `false`, or `null` meaning the platform cannot
+tell, which a consumer must not draw as locked. **`docs/integration-api.md` is
+the document to hand to whoever builds the other side** — full field table, both
+delivery routes, and a Leaflet example.
+
+The console's **الربط الخارجي** page renders the same feed through the same
+shaping code, so the exact bytes a partner receives can be read and copied
+without a token, alongside the issued tokens and when each was last used.
+
 Three properties of this API are deliberate and should stay that way:
 
 - **Read only.** No unlock, no configuration, no write of any kind is
@@ -192,6 +204,12 @@ Three properties of this API are deliberate and should stay that way:
 
 Revoke with `UPDATE api_tokens SET is_active = false WHERE name = '...';`, and
 see `last_used_at` / `request_count` in that table for who is actually calling.
+
+Browser callers are off by default: the feed sends no CORS headers unless
+`INTEGRATION_CORS_ORIGINS` lists their exact origin. Prefer having the partner's
+own server hold the token and re-serve the JSON — a token in browser JavaScript
+is readable by anyone who views the page source, and with it the live position
+of every tanker.
 
 ## Basemaps
 
