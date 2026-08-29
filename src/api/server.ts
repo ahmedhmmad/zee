@@ -197,7 +197,7 @@ async function flushDeviceUpdates(): Promise<void> {
   }
 
   try {
-    const devices = (await fetchDevicesByIds(batch)) as { device_id: string }[];
+    const devices = await fetchDevicesByIds(batch);
 
     /*
      * Broadcast as individual frames, which every console already understands.
@@ -209,15 +209,15 @@ async function flushDeviceUpdates(): Promise<void> {
      */
     for (const device of devices) {
       broadcast(JSON.stringify({
-        kind: kinds.get(device.device_id) ?? 'state',
-        deviceId: device.device_id,
+        kind: kinds.get(device.deviceId) ?? 'state',
+        deviceId: device.deviceId,
         device,
       }));
     }
 
     // A device that vanished mid-flight still deserves a nudge, so the browser
     // can drop it from the list.
-    const returned = new Set(devices.map((d) => d.device_id));
+    const returned = new Set(devices.map((d) => d.deviceId));
     for (const id of batch) {
       if (!returned.has(id)) broadcast(JSON.stringify({ kind: kinds.get(id) ?? 'state', deviceId: id }));
     }

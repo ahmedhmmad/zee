@@ -80,7 +80,7 @@ const MOVING_KPH = 3;
 
 const COMPASS = ['شمال', 'شمال شرق', 'شرق', 'جنوب شرق', 'جنوب', 'جنوب غرب', 'غرب', 'شمال غرب'];
 
-const isMoving = (d) => Number(d.speed_kph ?? 0) >= MOVING_KPH;
+const isMoving = (d) => Number(d.speedKph ?? 0) >= MOVING_KPH;
 
 /**
  * The map marker is meaningfully behind reality.
@@ -93,13 +93,13 @@ const isMoving = (d) => Number(d.speed_kph ?? 0) >= MOVING_KPH;
 const POSITION_LAG_MS = 2 * 60 * 1000;
 
 function positionIsLagging(d) {
-  if (!d.last_position_at) return false;
-  return Date.now() - new Date(d.last_position_at) > POSITION_LAG_MS;
+  if (!d.lastPositionAt) return false;
+  return Date.now() - new Date(d.lastPositionAt) > POSITION_LAG_MS;
 }
 
 function headingLabel(d) {
   if (!isMoving(d)) return 'متوقفة';
-  const deg = ((Number(d.heading_deg ?? 0) % 360) + 360) % 360;
+  const deg = ((Number(d.headingDeg ?? 0) % 360) + 360) % 360;
   return `${COMPASS[Math.round(deg / 45) % 8]} · ${Math.round(deg)}°`;
 }
 
@@ -529,7 +529,7 @@ function runAnimation() {
  */
 function markerFreshness(d) {
   if (connectionState(d) === 'sleeping') return 'ok';
-  const age = d.last_position_at ? (Date.now() - new Date(d.last_position_at)) / 1000 : Infinity;
+  const age = d.lastPositionAt ? (Date.now() - new Date(d.lastPositionAt)) / 1000 : Infinity;
   if (age <= 60) return 'ok';
   if (age <= 900) return 'aging';
   return 'stale';
@@ -566,27 +566,27 @@ function syncMarkers() {
   const box = viewportBox();
   for (const device of state.devices) {
     if (!hasLocation(device)) {
-      state.map.removeMarker(device.device_id);
-      anim.delete(device.device_id);
+      state.map.removeMarker(device.deviceId);
+      anim.delete(device.deviceId);
       continue;
     }
     const opts = {
       title: device.name,
       // Plate first: it is short, unique, and what a dispatcher says on the
       // radio. The full name stays on hover and in the panel.
-      label: device.plate_number || device.name,
+      label: device.plateNumber || device.name,
       freshness: markerFreshness(device),
-      heading: Number(device.heading_deg ?? 0),
+      heading: Number(device.headingDeg ?? 0),
       moving: isMoving(device),
       kind:
         connectionState(device) === 'offline'
           ? 'offline'
-          : device.motor_locked === false
+          : device.locked === false
             ? 'unlocked'
             : 'locked',
     };
 
-    const id = device.device_id;
+    const id = device.deviceId;
     const prev = anim.get(id);
     const now = performance.now();
     const [curLat, curLon] = prev ? pointNow(prev, now) : [device.latitude, device.longitude];
@@ -595,8 +595,8 @@ function syncMarkers() {
     // Time between this fix and the last one we drew, which is how long the
     // slide should take for motion to look continuous rather than rushed.
     const fixMs =
-      prev?.lastFix && device.last_position_at
-        ? new Date(device.last_position_at) - new Date(prev.lastFix)
+      prev?.lastFix && device.lastPositionAt
+        ? new Date(device.lastPositionAt) - new Date(prev.lastFix)
         : 0;
 
     // A jump too large to be one reporting interval of driving is a coverage
@@ -619,7 +619,7 @@ function syncMarkers() {
       start: now,
       dur,
       opts,
-      lastFix: device.last_position_at,
+      lastFix: device.lastPositionAt,
     });
 
     if (!dur) state.map.setMarker(id, device.latitude, device.longitude, opts);
@@ -655,8 +655,8 @@ function deviceRowHtml(d) {
         ${lockPill(d)}
       </div>
       <div class="row">
-        <span class="muted">${escapeHtml(d.plate_number ?? d.device_id)}</span>
-        <span class="muted">${batteryLabel(d)} · ${fmtAgo(d.last_position_at ?? d.last_seen_at)}${positionIsLagging(d) ? ' ⏳' : ''}</span>
+        <span class="muted">${escapeHtml(d.plateNumber ?? d.deviceId)}</span>
+        <span class="muted">${batteryLabel(d)} · ${fmtAgo(d.lastPositionAt ?? d.lastSeenAt)}${positionIsLagging(d) ? ' ⏳' : ''}</span>
       </div>`;
 }
 
@@ -666,10 +666,10 @@ function deviceRowClass(d) {
   const kind =
     connectionState(d) === 'offline'
       ? 'is-offline'
-      : d.motor_locked === false
+      : d.locked === false
         ? 'is-unlocked'
         : 'is-locked';
-  return `device-item ${kind}${d.device_id === state.selectedId ? ' selected' : ''}`;
+  return `device-item ${kind}${d.deviceId === state.selectedId ? ' selected' : ''}`;
 }
 
 function renderDeviceList() {
@@ -679,7 +679,7 @@ function renderDeviceList() {
     (d) =>
       !query ||
       d.name.toLowerCase().includes(query) ||
-      (d.plate_number ?? '').toLowerCase().includes(query),
+      (d.plateNumber ?? '').toLowerCase().includes(query),
   );
 
   $('device-count').textContent = `${visible.length} مركبة`;
@@ -695,7 +695,7 @@ function renderDeviceList() {
   // being left behind above the real rows.
   for (const li of list.querySelectorAll('li:not([data-device-id])')) li.remove();
 
-  const wanted = new Set(visible.map((d) => d.device_id));
+  const wanted = new Set(visible.map((d) => d.deviceId));
   for (const [id, row] of deviceRows) {
     if (!wanted.has(id)) {
       row.li.remove();
@@ -707,12 +707,12 @@ function renderDeviceList() {
   // moved touches one row.
   let previous = null;
   for (const d of visible) {
-    let row = deviceRows.get(d.device_id);
+    let row = deviceRows.get(d.deviceId);
     if (!row) {
       const li = document.createElement('li');
-      li.dataset.deviceId = d.device_id;
+      li.dataset.deviceId = d.deviceId;
       row = { li, html: null, cls: null };
-      deviceRows.set(d.device_id, row);
+      deviceRows.set(d.deviceId, row);
     }
 
     const html = deviceRowHtml(d);
@@ -749,9 +749,9 @@ function renderDeviceList() {
 const SLEEP_GRACE_MS = 45 * 60 * 1000;
 
 function connectionState(d) {
-  if (d.is_connected) return 'connected';
-  if (!d.last_seen_at) return 'offline';
-  return Date.now() - new Date(d.last_seen_at) < SLEEP_GRACE_MS ? 'sleeping' : 'offline';
+  if (d.online) return 'connected';
+  if (!d.lastSeenAt) return 'offline';
+  return Date.now() - new Date(d.lastSeenAt) < SLEEP_GRACE_MS ? 'sleeping' : 'offline';
 }
 
 /**
@@ -765,9 +765,9 @@ function connectionState(d) {
 const UNLOCK_STALE_MS = 3 * 60 * 1000;
 
 function isUnlockReadingStale(d) {
-  if (d.motor_locked !== false || d.is_connected) return false;
-  if (!d.last_position_at) return true;
-  return Date.now() - new Date(d.last_position_at) > UNLOCK_STALE_MS;
+  if (d.locked !== false || d.online) return false;
+  if (!d.lastPositionAt) return true;
+  return Date.now() - new Date(d.lastPositionAt) > UNLOCK_STALE_MS;
 }
 
 function lockPill(d) {
@@ -776,7 +776,7 @@ function lockPill(d) {
 
   const lock = isUnlockReadingStale(d)
     ? '<span class="pill pill-warn" title="قد يكون الجهاز أُقفل تلقائياً بعد ذلك">مفتوح؟</span>'
-    : d.motor_locked === false
+    : d.locked === false
       ? '<span class="pill pill-danger">مفتوح</span>'
       : '<span class="pill pill-ok">مقفل</span>';
 
@@ -789,13 +789,13 @@ function lockPill(d) {
  * which case battery_percent is null and only the state is known.
  */
 function batteryLabel(d) {
-  if (d.battery_percent == null) return d.charging ? 'قيد الشحن' : '—';
-  return d.charging ? `${d.battery_percent}% (شحن)` : `${d.battery_percent}%`;
+  if (d.batteryPercent == null) return d.charging ? 'قيد الشحن' : '—';
+  return d.charging ? `${d.batteryPercent}% (شحن)` : `${d.batteryPercent}%`;
 }
 
 /** GSM signal is 0-31; 99 means the device saw no network at all. */
 function signalLabel(d) {
-  const v = d.gsm_signal;
+  const v = d.gsmSignal;
   if (v == null) return 'لا توجد إشارة';
   const bars = v >= 20 ? 'ممتازة' : v >= 14 ? 'جيدة' : v >= 8 ? 'ضعيفة' : 'ضعيفة جداً';
   return `${v}/31 · ${bars}`;
@@ -810,7 +810,7 @@ function carrierLabel(d) {
 }
 
 async function renderDetail() {
-  const d = state.devices.find((x) => x.device_id === state.selectedId);
+  const d = state.devices.find((x) => x.deviceId === state.selectedId);
   const panel = $('detail');
   if (!d) {
     panel.hidden = true;
@@ -819,7 +819,7 @@ async function renderDetail() {
   panel.hidden = false;
 
   $('d-name').textContent = d.name;
-  $('d-plate').textContent = `${d.plate_number ?? '—'} · ${d.device_id}`;
+  $('d-plate').textContent = `${d.plateNumber ?? '—'} · ${d.deviceId}`;
   $('d-lock').innerHTML = lockPill(d);
   // Say why the reading is uncertain, rather than leaving a bare question mark.
   $('d-lock-note').textContent = isUnlockReadingStale(d)
@@ -827,11 +827,11 @@ async function renderDetail() {
     : '';
   $('d-lock-note').hidden = !isUnlockReadingStale(d);
   $('d-battery').textContent = batteryLabel(d);
-  $('d-speed').textContent = d.speed_kph != null ? `${Number(d.speed_kph).toFixed(0)} كم/س` : '—';
+  $('d-speed').textContent = d.speedKph != null ? `${Number(d.speedKph).toFixed(0)} كم/س` : '—';
   $('d-signal').textContent = signalLabel(d);
   $('d-heading').textContent = headingLabel(d);
   $('d-sats').textContent = d.satellites ?? '—';
-  $('d-rope').textContent = d.rope_inserted == null ? '—' : d.rope_inserted ? 'مُدخَل' : 'مسحوب';
+  $('d-rope').textContent = d.ropeInserted == null ? '—' : d.ropeInserted ? 'مُدخَل' : 'مسحوب';
   // The odometer is a lifetime counter, useful for servicing but useless for
   // "what did this truck do today" — so the per-period figures lead.
   //
@@ -840,38 +840,42 @@ async function renderDetail() {
   // printing it: this feeds a Ministry report, and a confident wrong number is
   // worse than an admitted gap.
   const km = (v) =>
-    d.mileage_has_anomaly ? 'غير موثوق (تغيّر العدّاد)' : v == null ? '—' : `${Math.round(Number(v))} كم`;
-  $('d-dist-today').textContent = km(d.today_km);
-  $('d-dist-week').textContent = km(d.week_km);
-  $('d-mileage').textContent = d.mileage_km != null ? `${d.mileage_km} كم` : '—';
+    d.mileageHasAnomaly ? 'غير موثوق (تغيّر العدّاد)' : v == null ? '—' : `${Math.round(Number(v))} كم`;
+  $('d-dist-today').textContent = km(d.todayKm);
+  $('d-dist-week').textContent = km(d.weekKm);
+  $('d-mileage').textContent = d.mileageKm != null ? `${d.mileageKm} كم` : '—';
   $('d-carrier').textContent = carrierLabel(d);
   // Lock events arrive 2-5 minutes late, cached in device flash, so this can
   // legitimately lag the live status above. Show the delay rather than hide it.
-  $('d-last-event').textContent = d.last_event_at
-    ? `${EVENT_NAMES[d.last_event_source] ?? d.last_event_source} · ${fmtDateTime(d.last_event_at)}` +
-      (d.last_event_command_id ? ' · بأمر من المنظومة' : '')
+  $('d-last-event').textContent = d.lastEvent
+    ? `${EVENT_NAMES[d.lastEvent.source] ?? d.lastEvent.source} · ${fmtDateTime(d.lastEvent.at)}` +
+      (d.lastEvent.commandId ? ' · بأمر من المنظومة' : '')
     : 'لا يوجد';
-  $('d-devid').textContent = d.device_id;
+  $('d-devid').textContent = d.deviceId;
   $('d-model').textContent = d.model ?? '—';
   $('d-imei').textContent = d.imei ?? '—';
-  $('d-firmware').textContent = d.firmware_version ?? 'غير معروف — أرسل الأمر P01';
+  $('d-firmware').textContent = d.firmwareVersion ?? 'غير معروف — أرسل الأمر P01';
   // Contact and position are different facts. The sub-lock beats every 35
   // seconds, so last_seen_at says "now" while the position can be minutes
   // old - which is exactly when someone stares at a stationary marker
   // wondering why the truck is not moving.
-  $('d-seen').textContent = `${fmtAgo(d.last_seen_at)} (${fmtTime(d.last_seen_at)})`;
-  $('d-posage').textContent = d.last_position_at
-    ? `${fmtAgo(d.last_position_at)} (${fmtTime(d.last_position_at)})`
+  $('d-seen').textContent = `${fmtAgo(d.lastSeenAt)} (${fmtTime(d.lastSeenAt)})`;
+  $('d-posage').textContent = d.lastPositionAt
+    ? `${fmtAgo(d.lastPositionAt)} (${fmtTime(d.lastPositionAt)})`
     : 'لا يوجد';
   $('d-posage').className = positionIsLagging(d) ? 'lagging' : '';
-  $('d-wake').textContent = WAKE_REASONS[d.wake_source] ?? '—';
+  $('d-wake').textContent = WAKE_REASONS[d.wakeSource] ?? '—';
 
   // Say "no fix" plainly rather than drawing a confident dot in the wrong place.
   $('d-pos').textContent = !hasLocation(d)
     ? 'لا يوجد تحديد GPS بعد — الجهاز داخل مبنى'
-    : `${d.latitude.toFixed(5)}, ${d.longitude.toFixed(5)}${d.positioned ? '' : ' (موقع قديم)'}`;
+    : `${d.latitude.toFixed(5)}, ${d.longitude.toFixed(5)}${d.hasCurrentFix ? '' : ' (موقع قديم)'}`;
 
-  const alarms = Object.keys(d.active_alarms ?? {}).filter((k) => d.active_alarms[k]);
+  // `positioned` and `hasCurrentFix` are two different questions and were one
+  // word apart: the first says this row has coordinates, the second says the
+  // NEWEST report carried a fix. It is the second that makes the line above
+  // mark a shown position as the last known one rather than the current one.
+  const alarms = d.alarms ?? [];
   const alarmBox = $('d-alarms');
   alarmBox.hidden = alarms.length === 0;
   alarmBox.innerHTML = alarms.length
@@ -885,7 +889,7 @@ async function renderDetail() {
   unlockBtn.disabled = !state.mayUnlock;
   unlockBtn.title = state.mayUnlock ? '' : 'هذا الحساب مخوَّل بالمتابعة فقط';
 
-  await Promise.all([loadCommands(d.device_id), loadEvents(d.device_id), loadArrivals(d.device_id), loadSubLocks(d.device_id)]);
+  await Promise.all([loadCommands(d.deviceId), loadEvents(d.deviceId), loadArrivals(d.deviceId), loadSubLocks(d.deviceId)]);
 }
 
 async function loadCommands(deviceId) {
@@ -1007,7 +1011,7 @@ async function loadEvents(deviceId) {
 
 function selectDevice(deviceId) {
   state.selectedId = deviceId;
-  const d = state.devices.find((x) => x.device_id === deviceId);
+  const d = state.devices.find((x) => x.deviceId === deviceId);
   if (d && hasLocation(d)) state.map.flyTo(d.latitude, d.longitude);
   renderDeviceList();
   renderDetail();
@@ -1026,16 +1030,16 @@ $('search').addEventListener('input', renderDeviceList);
 // --- Unlock -----------------------------------------------------------------
 
 $('unlock-btn').addEventListener('click', () => {
-  const d = state.devices.find((x) => x.device_id === state.selectedId);
+  const d = state.devices.find((x) => x.deviceId === state.selectedId);
   if (!d) {
     toast('لم يتم اختيار مركبة', 'bad');
     return;
   }
-  $('unlock-device').textContent = `${d.name} (${d.plate_number ?? d.device_id})`;
+  $('unlock-device').textContent = `${d.name} (${d.plateNumber ?? d.deviceId})`;
   $('unlock-reason').value = '';
   // Pin the target to the modal itself. Reading it back from shared state at
   // submit time is how a null device id reached the server.
-  $('unlock-modal').dataset.deviceId = d.device_id;
+  $('unlock-modal').dataset.deviceId = d.deviceId;
   $('unlock-modal').hidden = false;
   $('unlock-reason').focus();
 });
@@ -1106,14 +1110,14 @@ async function loadSubLocks(deviceId) {
       .map((s) => {
         // Bound but never heard from: the master lists it, yet it has sent
         // nothing. Normal for a freshly fitted lock with no LoRa heartbeat.
-        const neverReported = !s.last_seen_at;
-        const unbound = !s.bound_confirmed_at && !neverReported;
+        const neverReported = !s.lastSeenAt;
+        const unbound = !s.boundConfirmedAt && !neverReported;
 
         const state = neverReported
           ? '<span class="pill pill-warn">مرتبط — لم يُرسل بعد</span>'
           : unbound
             ? '<span class="pill pill-muted">لم يعد مرتبطاً</span>'
-            : s.comms_lost_alarm
+            : s.commsLost
           ? '<span class="pill pill-danger">انقطع الاتصال بالقفل</span>'
           : s.locked === true
             ? '<span class="pill pill-ok">مقفل</span>'
@@ -1125,36 +1129,36 @@ async function loadSubLocks(deviceId) {
         if (neverReported) {
           bits.push('اضغط زر الإيقاظ على القفل ليُرسل حالته لأول مرة');
         }
-        if (s.battery_percent != null) bits.push(`البطارية ${s.battery_percent}%`);
+        if (s.batteryPercent != null) bits.push(`البطارية ${s.batteryPercent}%`);
         if (s.voltage != null) bits.push(`${Number(s.voltage).toFixed(2)} فولت`);
         if (s.rssi != null) bits.push(`إشارة ${s.rssi} dBm`);
-        if (s.rope_pulled_out === true) bits.push('الحبل مسحوب');
-        if (s.back_cover_open === true) bits.push('الغطاء مفتوح');
+        if (s.ropePulledOut === true) bits.push('الحبل مسحوب');
+        if (s.backCoverOpen === true) bits.push('الغطاء مفتوح');
         if (s.charging === true) bits.push('قيد الشحن');
-        if (s.low_voltage_alarm) bits.push('بطارية منخفضة');
-        if (s.lock_cycles != null) bits.push(`${s.lock_cycles} دورة فتح/إقفال`);
-        if (s.temperature_c != null) bits.push(`${s.temperature_c}°م`);
-        if (s.humidity_percent != null) bits.push(`رطوبة ${s.humidity_percent}%`);
+        if (s.lowVoltage) bits.push('بطارية منخفضة');
+        if (s.lockCycles != null) bits.push(`${s.lockCycles} دورة فتح/إقفال`);
+        if (s.temperatureC != null) bits.push(`${s.temperatureC}°م`);
+        if (s.humidityPercent != null) bits.push(`رطوبة ${s.humidityPercent}%`);
 
-        const alarming = s.comms_lost_alarm || s.back_cover_open === true || s.locked === false;
+        const alarming = s.commsLost || s.backCoverOpen === true || s.locked === false;
 
         // Valve locks can be opened; temperature sensors obviously cannot.
         // And only while sub-lock unlocking is switched on: there is currently
         // no way to confirm a valve actually opened, so the capability is off.
         const unlockable =
           unlockEnabled &&
-          (s.device_type === 'jt709_sub_lock' || s.device_type === 'jt802_valve_lock');
+          (s.type === 'jt709_sub_lock' || s.type === 'jt802_valve_lock');
 
         return `<li class="${alarming ? 'bad' : ''}">
           <div class="row">
-            <strong class="ltr-inline">${escapeHtml(s.peripheral_id)}</strong>
+            <strong class="ltr-inline">${escapeHtml(s.peripheralId)}</strong>
             ${state}
           </div>
-          <div class="muted">${SUB_TYPES[s.device_type] ?? s.device_type} · ${bits.map(escapeHtml).join(' · ')}</div>
-          <div class="when">${fmtAgo(s.last_seen_at)}</div>
+          <div class="muted">${SUB_TYPES[s.type] ?? s.type} · ${bits.map(escapeHtml).join(' · ')}</div>
+          <div class="when">${fmtAgo(s.lastSeenAt)}</div>
           ${
             unlockable
-              ? `<button class="btn btn-ghost btn-xs sublock-unlock" data-sub="${escapeHtml(s.peripheral_id)}">فتح هذا القفل</button>`
+              ? `<button class="btn btn-ghost btn-xs sublock-unlock" data-sub="${escapeHtml(s.peripheralId)}">فتح هذا القفل</button>`
               : ''
           }
         </li>`;
@@ -1329,7 +1333,7 @@ $('open-tracking').addEventListener('click', () => {
   $('tracking-page').hidden = false;
   // Reuse the vehicle list already loaded for the map.
   $('trk-device').innerHTML = state.devices
-    .map((d) => `<option value="${d.device_id}">${escapeHtml(d.name)} — ${escapeHtml(d.plate_number ?? d.device_id)}</option>`)
+    .map((d) => `<option value="${d.deviceId}">${escapeHtml(d.name)} — ${escapeHtml(d.plateNumber ?? d.deviceId)}</option>`)
     .join('');
   if (state.selectedId) $('trk-device').value = state.selectedId;
   loadCurrentSettings();
@@ -1562,7 +1566,7 @@ async function drawDestinations(deviceId, arrivals) {
   state.map.clearDestinations();
   state.map.clearRoute?.();
 
-  const device = state.devices.find((d) => d.device_id === deviceId);
+  const device = state.devices.find((d) => d.deviceId === deviceId);
   const from = device && hasLocation(device) ? { lat: device.latitude, lon: device.longitude } : null;
 
   for (const a of arrivals.filter((x) => x.is_armed)) {
@@ -1650,7 +1654,11 @@ async function loadDevicesPage() {
     api('/api/unknown-devices').catch(() => []),
     api('/api/password-reads').catch(() => []),
   ]);
-  const readsById = new Map(reads.map((r) => [r.device_id, r]));
+  // Keyed on a trimmed id: password-reads is raw SQL over a char(10) column,
+  // while a device's id now arrives trimmed. Both are ten digits today, so
+  // this changes nothing — and stops the lookup failing silently if that
+  // stops being true.
+  const readsById = new Map(reads.map((r) => [r.device_id.trim(), r]));
 
   // Locks that reached the gateway but are not registered. Approving one from
   // here means the id never has to be read off a label and retyped.
@@ -1674,24 +1682,24 @@ async function loadDevicesPage() {
   $('devices-list').innerHTML = devices.length
     ? devices
         .map((d) => {
-          const weak = d.static_password_is_default;
+          const weak = d.staticPasswordIsDefault;
           return `<li>
             <div class="row">
               <strong>${escapeHtml(d.name)}</strong>
               <span>
-                <button class="btn btn-ghost btn-xs" data-commission="${d.device_id}">تهيئة</button>
-                <button class="btn btn-ghost btn-xs" data-readpw="${d.device_id}">قراءة كلمة المرور</button>
-                <button class="btn btn-ghost btn-xs" data-setpw="${d.device_id}">تغيير كلمة المرور</button>
+                <button class="btn btn-ghost btn-xs" data-commission="${d.deviceId}">تهيئة</button>
+                <button class="btn btn-ghost btn-xs" data-readpw="${d.deviceId}">قراءة كلمة المرور</button>
+                <button class="btn btn-ghost btn-xs" data-setpw="${d.deviceId}">تغيير كلمة المرور</button>
               </span>
             </div>
             <div class="muted">
-              <span class="ltr-inline">${d.device_id}</span> · ${escapeHtml(d.plate_number ?? '—')} ·
-              ${d.model ?? '—'}${d.firmware_version ? ` · <span class="ltr-inline">${escapeHtml(d.firmware_version.split('_').slice(0, 2).join('_'))}</span>` : ''}
+              <span class="ltr-inline">${d.deviceId}</span> · ${escapeHtml(d.plateNumber ?? '—')} ·
+              ${d.model ?? '—'}${d.firmwareVersion ? ` · <span class="ltr-inline">${escapeHtml(d.firmwareVersion.split('_').slice(0, 2).join('_'))}</span>` : ''}
               ${weak ? ' · <span class="pill pill-warn">كلمة مرور افتراضية</span>' : ''}
             </div>
             ${
-              readsById.has(d.device_id)
-                ? `<div class="dev-pw">${passwordReadNote(readsById.get(d.device_id))}</div>`
+              readsById.has(d.deviceId)
+                ? `<div class="dev-pw">${passwordReadNote(readsById.get(d.deviceId))}</div>`
                 : ''
             }
           </li>`;
@@ -1968,7 +1976,7 @@ async function openHistory() {
 
   const sel = $('hist-device');
   sel.innerHTML = state.devices
-    .map((d) => `<option value="${d.device_id}">${escapeHtml(d.name)}</option>`)
+    .map((d) => `<option value="${d.deviceId}">${escapeHtml(d.name)}</option>`)
     .join('');
   if (state.selectedId) sel.value = state.selectedId;
 
@@ -2226,19 +2234,19 @@ function applyUpdate(raw) {
   // partial message must never leave the console silently out of date.
   if (!incoming) return void refresh();
 
-  const byId = new Map(state.devices.map((d, i) => [d.device_id, i]));
+  const byId = new Map(state.devices.map((d, i) => [d.deviceId, i]));
   let touchedSelected = false;
 
   for (const device of incoming) {
     if (!device?.device_id) continue;
-    const i = byId.get(device.device_id);
+    const i = byId.get(device.deviceId);
     if (i === undefined) {
-      byId.set(device.device_id, state.devices.length);
+      byId.set(device.deviceId, state.devices.length);
       state.devices.push(device);
     } else {
       state.devices[i] = device;
     }
-    if (state.selectedId === device.device_id) touchedSelected = true;
+    if (state.selectedId === device.deviceId) touchedSelected = true;
   }
 
   renderDeviceList();
@@ -2270,7 +2278,7 @@ async function refresh() {
  */
 function followSelected() {
   if (!state.follow || !state.selectedId || !state.map) return;
-  const d = state.devices.find((x) => x.device_id === state.selectedId);
+  const d = state.devices.find((x) => x.deviceId === state.selectedId);
   if (d && hasLocation(d)) state.map.panTo(d.latitude, d.longitude);
 }
 

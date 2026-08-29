@@ -44,7 +44,7 @@ const unlockByIp = new RateLimiter(20, 60_000);
  */
 const DUMMY_HASH = await hashPassword(crypto.randomUUID());
 import { tileRoutes } from './tiles.ts';
-import { fetchDevices } from './devices-query.ts';
+import { fetchDevices, fetchSubLocks } from './devices-query.ts';
 import { fetchIntegrationVehicles } from './integration.ts';
 import { toFeatureCollection } from './integration-shape.ts';
 import { encode } from '../protocol/index.ts';
@@ -660,17 +660,9 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/devices/:id/sublocks', async (req, reply) => {
     const id = deviceIdOf(req, reply);
     if (!id) return reply;
-    const { rows } = await pool.query(
-      `SELECT peripheral_id, name, device_type, last_seen_at, voltage, bound_confirmed_at,
-              battery_percent, rssi, locked, rope_pulled_out, back_cover_open,
-              charging, event_code, event_name, lock_cycles, rfid_card,
-              comms_lost_alarm, low_voltage_alarm, temperature_c, humidity_percent
-         FROM sub_devices
-        WHERE master_id = $1
-        ORDER BY peripheral_id`,
-      [id],
-    );
-    return rows;
+    // Shaped like the sub-locks the partner feed publishes, plus the fields
+    // only the panel shows. See devices-query.ts for why one vocabulary.
+    return fetchSubLocks(id);
   });
 
   /**
