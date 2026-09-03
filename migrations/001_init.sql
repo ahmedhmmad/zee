@@ -214,7 +214,13 @@ CREATE TABLE commands (
 
   -- draft -> pending_approval -> approved -> queued -> sent -> confirmed
   --                                                        \-> failed / expired
-  -- sent is NOT success: only the device's own P45 moves us to confirmed.
+  --
+  -- This comment was wrong on both counts and is corrected in
+  -- 014_command_evidence.sql: 'confirmed' means the device answered the command
+  -- word, NOT that the lock moved, and the P45 lock event is evidence recorded
+  -- separately rather than the thing that sets this column. 014 also adds
+  -- 'uncertain' for the case this vocabulary could not express - nothing came
+  -- back, and the command may or may not have executed.
   status        text        NOT NULL DEFAULT 'queued'
     CHECK (status IN ('draft','pending_approval','approved','queued','sent','confirmed','failed','expired','rejected')),
 

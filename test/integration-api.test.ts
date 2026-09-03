@@ -8,7 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toVehicle, toFeatureCollection } from '../src/api/integration-shape.ts';
+import { toVehicle, toSubLock, toFeatureCollection } from '../src/api/integration-shape.ts';
 
 /** A truck on Tripoli's coast road, as device_state would return it. */
 function tripoliRow(over: Record<string, unknown> = {}) {
@@ -25,9 +25,34 @@ function tripoliRow(over: Record<string, unknown> = {}) {
     heading_deg: 124,
     battery_percent: 87,
     motor_locked: true,
+    rope_inserted: true,
+    active_alarms: {},
     mileage_km: 1210,
+    last_event_at: new Date('2026-08-15T14:20:00Z'),
+    last_event_source: 'remote_static_password',
+    last_event_allowed: true,
+    last_event_command_id: 185,
     ...over,
   } as Parameters<typeof toVehicle>[0];
+}
+
+/** A JT709 valve sub-lock bound to that truck, as sub_devices would return it. */
+function valveRow(over: Record<string, unknown> = {}) {
+  return {
+    peripheral_id: 'E03B60000A',
+    master_id: '8055430364',
+    name: 'صمام 1',
+    device_type: 'jt709_sub_lock',
+    locked: true,
+    rope_pulled_out: false,
+    back_cover_open: false,
+    battery_percent: 96,
+    voltage: '3.60',
+    last_seen_at: new Date('2026-08-15T14:30:00Z'),
+    comms_lost_alarm: false,
+    low_voltage_alarm: false,
+    ...over,
+  } as Parameters<typeof toSubLock>[0];
 }
 
 test('GeoJSON coordinates are longitude first', () => {
@@ -85,6 +110,76 @@ test('no credential or subscriber data reaches an external caller', () => {
   ]) {
     assert.equal(leaked in v, false, `${leaked} must not be exposed`);
   }
+});
+
+test('a sub-lock carries no card id, which identifies a driver rather than a valve', () => {
+  const s = toSubLock(valveRow({ rfid_card: '0004512345' })) as Record<string, unknown>;
+  for (const leaked of ['rfid_card', 'rfidCard', 'card']) {
+    assert.equal(leaked in s, false, `${leaked} must not be exposed`);
+  }
+});
+
+/*
+ * The sub-lock half. Every assertion here is about refusing to state something
+ * the platform does not know: the JT709 status decoding is reconstructed from
+ * real frames rather than documented, so `locked` is a three-state field and
+ * flattening it to a boolean anywhere on this path puts a confident answer on
+ * a Ministry screen that nothing behind it supports.
+ */
+test('a sub-lock whose state we cannot read stays null, and is never drawn as locked', () => {
+  const v = toVehicle(tripoliRow(), [toSubLock(valveRow({ locked: null }))]);
+  assert.equal(v.subLocks[0]!.locked, null, 'unknown must not become false');
+
+  // And through GeoJSON, which is where a map client reads it.
+  const fc = toFeatureCollection([v]);
+  assert.equal(fc.features[0]!.properties.subLocks[0]!.locked, null);
+});
+
+test('the sub-lock counts keep unknown separate from locked', () => {
+  const v = toVehicle(tripoliRow(), [
+    toSubLock(valveRow({ peripheral_id: 'E03B60000A', locked: true })),
+    toSubLock(valveRow({ peripheral_id: 'E03B60000B', locked: false })),
+    toSubLock(valveRow({ peripheral_id: 'E03B60000C', locked: null })),
+  ]);
+
+  assert.equal(v.subLockCount, 3);
+  assert.equal(v.subLocksLocked, 1, 'only a confirmed lock counts as locked');
+  assert.equal(v.subLocksUnknown, 1, 'an unreadable valve is reported, not folded away');
+});
+
+test('subLocks and alarms are empty arrays rather than null', () => {
+  const v = toVehicle(tripoliRow({ active_alarms: null }));
+  // A consumer iterating these should not need a null guard, and an absent
+  // field reads as "this version of the feed does not send it".
+  assert.deepEqual(v.subLocks, []);
+  assert.deepEqual(v.alarms, []);
+});
+
+test('alarms are published as the names that are actually raised', () => {
+  const v = toVehicle(tripoliRow({ active_alarms: { ropeCutAlarm: true, lowBatteryAlarm: true } }));
+  assert.deepEqual(v.alarms.sort(), ['lowBatteryAlarm', 'ropeCutAlarm']);
+});
+
+test('the last event is the newest event of any kind, not only an unlock', () => {
+  const v = toVehicle(tripoliRow());
+  assert.equal(v.lastEvent!.at, '2026-08-15T14:20:00.000Z');
+  assert.equal(v.lastEvent!.source, 'remote_static_password');
+  assert.equal(v.lastEvent!.commandId, 185);
+
+  // auto_locked arrives on this field too. A consumer that read it as an
+  // opening would report a valve movement that never happened.
+  const locked = toVehicle(tripoliRow({ last_event_source: 'auto_locked', last_event_allowed: false }));
+  assert.equal(locked.lastEvent!.source, 'auto_locked');
+  assert.equal(locked.lastEvent!.allowed, false);
+
+  assert.equal(toVehicle(tripoliRow({ last_event_at: null })).lastEvent, null);
+});
+
+test('sub-lock voltage is a number, like every other numeric on this wire', () => {
+  const s = toSubLock(valveRow());
+  assert.equal(s.voltage, 3.6);
+  assert.equal(toSubLock(valveRow({ voltage: null })).voltage, null);
+  assert.equal(s.lastSeenAt, '2026-08-15T14:30:00.000Z');
 });
 
 test('the device id is trimmed of char(10) padding', () => {

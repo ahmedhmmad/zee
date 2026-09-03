@@ -11,11 +11,17 @@ const state = {
   locations: [],
   selectedId: null,
   map: null,
-  // Cached from /api/config so the basemap can be rebuilt on switch without
-  // refetching it.
-  googleMapsApiKey: '',
+  // Cached from /api/config. Not a basemap key — it buys the road route drawn
+  // to an arrival point, and nothing else.
   arcgisApiKey: '',
-  arcgisVersion: '',
+  // Whether valve sub-lock unlocking is switched on at all. Off means the
+  // controls are hidden — the API refuses regardless, so this only spares an
+  // operator a button that cannot work.
+  subLockUnlockEnabled: false,
+  // Who is logged in, and whether they may open locks. Same principle: the
+  // routes decide, this only keeps a useless button off the screen.
+  username: null,
+  mayUnlock: false,
   // Keep the selected vehicle centred as it drives. Without this the marker
   // wanders out of a static viewport and a moving truck looks stationary.
   follow: true,
@@ -72,7 +78,7 @@ const MOVING_KPH = 3;
 
 const COMPASS = ['شمال', 'شمال شرق', 'شرق', 'جنوب شرق', 'جنوب', 'جنوب غرب', 'غرب', 'شمال غرب'];
 
-const isMoving = (d) => Number(d.speed_kph ?? 0) >= MOVING_KPH;
+const isMoving = (d) => Number(d.speedKph ?? 0) >= MOVING_KPH;
 
 /**
  * The map marker is meaningfully behind reality.
@@ -85,13 +91,13 @@ const isMoving = (d) => Number(d.speed_kph ?? 0) >= MOVING_KPH;
 const POSITION_LAG_MS = 2 * 60 * 1000;
 
 function positionIsLagging(d) {
-  if (!d.last_position_at) return false;
-  return Date.now() - new Date(d.last_position_at) > POSITION_LAG_MS;
+  if (!d.lastPositionAt) return false;
+  return Date.now() - new Date(d.lastPositionAt) > POSITION_LAG_MS;
 }
 
 function headingLabel(d) {
   if (!isMoving(d)) return 'متوقفة';
-  const deg = ((Number(d.heading_deg ?? 0) % 360) + 360) % 360;
+  const deg = ((Number(d.headingDeg ?? 0) % 360) + 360) % 360;
   return `${COMPASS[Math.round(deg / 45) % 8]} · ${Math.round(deg)}°`;
 }
 
@@ -115,17 +121,62 @@ const EVENT_NAMES = {
   unknown: 'غير معروف',
 };
 
+/*
+ * The status of a command is what happened in the EXCHANGE with the device —
+ * not whether the lock moved. That is the evidence line below, and the two are
+ * kept visibly apart on purpose: "تم التأكيد من الجهاز" used to be read as
+ * "the valve opened", which it never meant.
+ *
+ * Every status in the schema's CHECK constraint must appear here, or the
+ * fallback shows an operator a raw English code.
+ */
 const COMMAND_STATUS = {
   queued: ['في الانتظار', 'pending'],
   approved: ['معتمَد', 'pending'],
-  sent: ['أُرسل — بانتظار تأكيد الجهاز', 'pending'],
-  confirmed: ['تم التأكيد من الجهاز', 'ok'],
+  sent: ['أُرسل — بانتظار رد الجهاز', 'pending'],
+  confirmed: ['قبِله الجهاز', 'ok'],
   failed: ['فشل', 'bad'],
+  // Not a milder failure and not a slower success: the command may have
+  // executed. Saying so is the entire point of the state.
+  uncertain: ['غير معروف — لم يرد الجهاز', 'uncertain'],
   expired: ['انتهت صلاحيته', 'bad'],
   rejected: ['مرفوض', 'bad'],
   pending_approval: ['بانتظار الموافقة', 'pending'],
   draft: ['مسودة', 'pending'],
 };
+
+/** Why a command failed. Only device_rejected says anything about the password. */
+const FAILURE_CAUSE = {
+  device_rejected: 'رفضه الجهاز',
+  transport: 'فشل الإرسال عبر الشبكة',
+  no_response: 'لا يوجد رد من الجهاز',
+  cancelled: 'أُلغي',
+  unclassified: 'سبب غير مسجَّل',
+};
+
+const EVIDENCE_KIND = {
+  lock_event: 'سجل القفل من الجهاز',
+  peripheral_report: 'تقرير القفل الفرعي',
+};
+
+/**
+ * The movement line for a command that can actually move a valve.
+ *
+ * Absence of evidence is shown as absence of evidence — never as "لم يُفتح".
+ * The platform does not know, and on a tanker full of petrol the difference
+ * between "it did not open" and "we cannot tell whether it opened" is the
+ * whole safety argument.
+ */
+function evidenceLine(c) {
+  if (!c.is_physical) return '';
+  if (c.physically_evidenced_at) {
+    const kind = EVIDENCE_KIND[c.physical_evidence_kind] ?? c.physical_evidence_kind ?? '';
+    return `<div class="evidence yes">✔ تحرَّك القفل فعلياً — ${escapeHtml(kind)} · ${fmtDateTime(c.physically_evidenced_at)}</div>`;
+  }
+  // Nothing to evidence yet on a command that has not gone out.
+  if (['draft', 'pending_approval', 'approved', 'queued'].includes(c.status)) return '';
+  return '<div class="evidence no">لا يوجد إثبات على تحرّك القفل</div>';
+}
 
 const WAKE_REASONS = {
   device_restart: 'إعادة تشغيل',
@@ -197,10 +248,32 @@ $('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('login-error').hidden = true;
   try {
-    await api('/api/login', { method: 'POST', body: JSON.stringify({ password: $('password').value }) });
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: $('username').value.trim(),
+        password: $('password').value,
+      }),
+    });
+    const body = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      // Say which wall they hit. "Wrong password" for a rate limit sends an
+      // operator round in circles changing something that was already right.
+      $('login-error').textContent =
+        body.error === 'too_many_attempts'
+          ? 'محاولات كثيرة خلال وقت قصير. انتظر بضع دقائق ثم أعد المحاولة.'
+          : 'اسم المستخدم أو كلمة المرور غير صحيحة';
+      $('login-error').hidden = false;
+      return;
+    }
+
     $('password').value = '';
+    state.mayUnlock = body.mayUnlock === true;
     start();
   } catch {
+    $('login-error').textContent = 'تعذّر الاتصال بالخادم';
     $('login-error').hidden = false;
   }
 });
@@ -250,112 +323,21 @@ $('map-theme').addEventListener('click', () => {
 // palette while Google's library downloads.
 document.documentElement.dataset.theme = mapTheme();
 
-/**
- * Which basemap the operator chose, remembered across visits.
- *
- * Stored locally rather than server-side: it is a display preference, and
- * different people at different screens reasonably want different answers.
- * Defaults to Google when a key exists, since its Libyan street data is the
- * reason it was chosen - falling back to imagery only if that key stops working.
- */
-function chosenBasemap(hasGoogleKey, hasArcgisKey = false) {
-  const saved = localStorage.getItem('zee.basemap');
-  // A saved choice whose key has since been removed would leave the operator
-  // staring at a blank panel, so fall through to imagery instead.
-  if (saved === 'google' && !hasGoogleKey) return hasArcgisKey ? 'arcgis' : 'esri';
-  if (saved === 'arcgis' && !hasArcgisKey) return 'esri';
-  if (saved) return saved;
-  // Esri by default. The client standardises on it, so that is what should be
-  // on screen when the console is opened cold - Google stays available in the
-  // picker but is no longer what anyone lands on. The licensed ArcGIS basemap
-  // takes precedence over the free imagery whenever a key is configured.
-  return hasArcgisKey ? 'arcgis' : 'esri';
-}
-
 async function initMap() {
   if (state.map) return;
-  const { googleMapsApiKey, arcgisApiKey, arcgisVersion } = await api('/api/config');
-  state.googleMapsApiKey = googleMapsApiKey;
+  const { arcgisApiKey, subLockUnlockEnabled } = await api('/api/config');
   state.arcgisApiKey = arcgisApiKey;
-  state.arcgisVersion = arcgisVersion;
-  const { createMap } = await import('/map.js');
-  state.map = await createMap(
-    document.getElementById('map'),
-    googleMapsApiKey,
-    selectDevice,
-    mapTheme(),
-    chosenBasemap(googleMapsApiKey, arcgisApiKey),
-    { apiKey: arcgisApiKey, version: arcgisVersion },
-  );
-  console.info(`[map] using ${state.map.provider}`);
-  // Raster tiles cannot be restyled, so the button only exists for Google.
-  renderThemeButton();
-  renderBasemapPicker();
-}
+  state.subLockUnlockEnabled = subLockUnlockEnabled === true;
 
-/**
- * Basemap picker.
- *
- * Rebuilding the map is the simplest correct way to switch: Google and
- * MapLibre are different libraries with different DOM, so there is nothing to
- * mutate in place. The selected vehicle is reapplied afterwards so the switch
- * does not silently lose what the operator was looking at.
- */
-async function renderBasemapPicker() {
-  const { availableBasemaps } = await import('/map.js');
-  const options = availableBasemaps(
-    Boolean(state.googleMapsApiKey),
-    Boolean(state.arcgisApiKey),
-  );
-  let host = document.getElementById('basemap-picker');
-  if (!host) {
-    host = document.createElement('div');
-    host.id = 'basemap-picker';
-    host.className = 'basemap-picker';
-    document.getElementById('map').parentElement.appendChild(host);
-  }
-  host.innerHTML = '';
-  for (const opt of options) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.textContent = opt.label;
-    b.className = opt.id === state.map.provider ? 'active' : '';
-    b.addEventListener('click', () => switchBasemap(opt.id));
-    host.appendChild(b);
-  }
-}
-
-async function switchBasemap(provider) {
-  if (!state.map || state.map.provider === provider) return;
-  localStorage.setItem('zee.basemap', provider);
-
-  const previous = state.selectedId;
-  const container = document.getElementById('map');
-
-  // Stop the marker animation before the map goes away, rather than leaving a
-  // frame to fire against a half-rebuilt console.
-  if (animFrame) {
-    cancelAnimationFrame(animFrame);
-    animFrame = null;
-  }
-
-  container.innerHTML = '';
-  state.map = null;
+  // The arrival form's sub-lock option only exists where the capability does.
+  // Offering a tick box the server will refuse produces a rule the operator
+  // thinks covers the valves and does not.
+  const subLockLine = $('arrival-sublocks-line');
+  if (subLockLine) subLockLine.hidden = !state.subLockUnlockEnabled;
 
   const { createMap } = await import('/map.js');
-  state.map = await createMap(
-    container,
-    state.googleMapsApiKey,
-    selectDevice,
-    mapTheme(),
-    provider,
-    { apiKey: state.arcgisApiKey, version: state.arcgisVersion },
-  );
-  console.info(`[map] switched to ${state.map.provider}`);
+  state.map = await createMap(document.getElementById('map'), selectDevice, arcgisApiKey);
   renderThemeButton();
-  renderBasemapPicker();
-  syncMarkers();
-  if (previous) selectDevice(previous);
 }
 
 /**
@@ -404,9 +386,8 @@ function runAnimation() {
   // the session, while the rest of the console carried on working.
   animFrame = null;
 
-  // Switching basemap nulls state.map and rebuilds it across an await. A frame
-  // queued before that lands in the gap with nothing to draw on; the
-  // syncMarkers() call after the rebuild starts the loop again.
+  // The map is null until initMap resolves, and a frame queued before that
+  // lands in the gap with nothing to draw on.
   const map = state.map;
   if (!map) return;
 
@@ -414,7 +395,21 @@ function runAnimation() {
   let active = false;
 
   for (const [id, a] of anim) {
-    if (a.dur && now - a.start < a.dur) active = true;
+    // Placed directly by syncMarkers — off screen, or a jump too big to tween.
+    // Redrawing it every frame was most of the loop's cost at fleet scale.
+    if (!a.dur) continue;
+
+    if (now - a.start >= a.dur) {
+      // One last draw to land it exactly, then leave it alone. The entry stays
+      // so the next fix knows where this marker came from.
+      if (!a.settled) {
+        map.setMarker(id, a.toLat, a.toLon, a.opts);
+        a.settled = true;
+      }
+      continue;
+    }
+
+    active = true;
     const [lat, lon] = pointNow(a, now);
     map.setMarker(id, lat, lon, a.opts);
   }
@@ -432,37 +427,64 @@ function runAnimation() {
  */
 function markerFreshness(d) {
   if (connectionState(d) === 'sleeping') return 'ok';
-  const age = d.last_position_at ? (Date.now() - new Date(d.last_position_at)) / 1000 : Infinity;
+  const age = d.lastPositionAt ? (Date.now() - new Date(d.lastPositionAt)) / 1000 : Infinity;
   if (age <= 60) return 'ok';
   if (age <= 900) return 'aging';
   return 'stale';
 }
 
+/**
+ * Is this position somewhere the operator can currently see?
+ *
+ * Read once per sync rather than per marker, and generously: a marker just off
+ * the edge may slide into view during its own animation, so the box is padded
+ * by a tenth of its own size. When the map cannot say, everything counts as
+ * visible — degrading to the old behaviour is the safe direction.
+ */
+function viewportBox() {
+  const b = state.map?.getBounds?.();
+  if (!b) return null;
+  const padLat = (b.north - b.south) * 0.1;
+  const padLon = (b.east - b.west) * 0.1;
+  return {
+    south: b.south - padLat,
+    north: b.north + padLat,
+    west: b.west - padLon,
+    east: b.east + padLon,
+  };
+}
+
+function inBox(box, lat, lon) {
+  if (!box) return true;
+  return lat >= box.south && lat <= box.north && lon >= box.west && lon <= box.east;
+}
+
 function syncMarkers() {
   if (!state.map) return;
+  const box = viewportBox();
   for (const device of state.devices) {
     if (!hasLocation(device)) {
-      state.map.removeMarker(device.device_id);
-      anim.delete(device.device_id);
+      state.map.removeMarker(device.deviceId);
+      anim.delete(device.deviceId);
       continue;
     }
     const opts = {
       title: device.name,
       // Plate first: it is short, unique, and what a dispatcher says on the
       // radio. The full name stays on hover and in the panel.
-      label: device.plate_number || device.name,
+      label: device.plateNumber || device.name,
       freshness: markerFreshness(device),
-      heading: Number(device.heading_deg ?? 0),
+      heading: Number(device.headingDeg ?? 0),
       moving: isMoving(device),
       kind:
         connectionState(device) === 'offline'
           ? 'offline'
-          : device.motor_locked === false
+          : device.locked === false
             ? 'unlocked'
             : 'locked',
     };
 
-    const id = device.device_id;
+    const id = device.deviceId;
     const prev = anim.get(id);
     const now = performance.now();
     const [curLat, curLon] = prev ? pointNow(prev, now) : [device.latitude, device.longitude];
@@ -471,15 +493,21 @@ function syncMarkers() {
     // Time between this fix and the last one we drew, which is how long the
     // slide should take for motion to look continuous rather than rushed.
     const fixMs =
-      prev?.lastFix && device.last_position_at
-        ? new Date(device.last_position_at) - new Date(prev.lastFix)
+      prev?.lastFix && device.lastPositionAt
+        ? new Date(device.lastPositionAt) - new Date(prev.lastFix)
         : 0;
 
     // A jump too large to be one reporting interval of driving is a coverage
     // gap, not movement we watched. Gliding across it would draw a route the
     // truck never took, so place it directly instead.
     const isGap = moved > 800;
-    const dur = isGap || moved < 1 ? 0 : Math.min(Math.max(fixMs || 2000, 800), 6000);
+    // Animation is only worth paying for where somebody can see it. At 3,000
+    // devices the animation loop is the frame budget, and almost all of it is
+    // spent tweening markers outside the viewport. Off-screen trucks are placed
+    // directly — their position is just as correct, it simply arrives without
+    // the slide.
+    const onScreen = inBox(box, device.latitude, device.longitude);
+    const dur = isGap || moved < 1 || !onScreen ? 0 : Math.min(Math.max(fixMs || 2000, 800), 6000);
 
     anim.set(id, {
       fromLat: curLat,
@@ -489,7 +517,7 @@ function syncMarkers() {
       start: now,
       dur,
       opts,
-      lastFix: device.last_position_at,
+      lastFix: device.lastPositionAt,
     });
 
     if (!dur) state.map.setMarker(id, device.latitude, device.longitude, opts);
@@ -500,6 +528,48 @@ function syncMarkers() {
 
 // --- Rendering --------------------------------------------------------------
 
+/*
+ * Rendered rows, by device id, so an update can patch one row instead of
+ * rebuilding the list.
+ *
+ * `innerHTML = ''` followed by 3,000 createElement calls ran on every pushed
+ * message. At the fleet's ~36 messages a second that is a full teardown and
+ * rebuild of the whole list thirty-six times a second, plus 3,000 discarded
+ * click listeners each time — the console stopped being interactive long
+ * before the server did.
+ */
+const deviceRows = new Map(); // deviceId -> { li, html, cls }
+
+/** One listener for the whole list, reading the id off the row. */
+$('device-list').addEventListener('click', (e) => {
+  const li = e.target.closest('li[data-device-id]');
+  if (li) selectDevice(li.dataset.deviceId);
+});
+
+function deviceRowHtml(d) {
+  return `
+      <div class="row">
+        <span class="name">${escapeHtml(d.name)}</span>
+        ${lockPill(d)}
+      </div>
+      <div class="row">
+        <span class="muted">${escapeHtml(d.plateNumber ?? d.deviceId)}</span>
+        <span class="muted">${batteryLabel(d)} · ${fmtAgo(d.lastPositionAt ?? d.lastSeenAt)}${positionIsLagging(d) ? ' ⏳' : ''}</span>
+      </div>`;
+}
+
+function deviceRowClass(d) {
+  // Only genuine loss of contact greys a vehicle out. A sleeping device
+  // still shows its lock state, because that is what operators care about.
+  const kind =
+    connectionState(d) === 'offline'
+      ? 'is-offline'
+      : d.locked === false
+        ? 'is-unlocked'
+        : 'is-locked';
+  return `device-item ${kind}${d.deviceId === state.selectedId ? ' selected' : ''}`;
+}
+
 function renderDeviceList() {
   const query = $('search').value.trim().toLowerCase();
   const list = $('device-list');
@@ -507,42 +577,61 @@ function renderDeviceList() {
     (d) =>
       !query ||
       d.name.toLowerCase().includes(query) ||
-      (d.plate_number ?? '').toLowerCase().includes(query),
+      (d.plateNumber ?? '').toLowerCase().includes(query),
   );
 
   $('device-count').textContent = `${visible.length} مركبة`;
-  list.innerHTML = '';
 
   if (visible.length === 0) {
+    for (const { li } of deviceRows.values()) li.remove();
+    deviceRows.clear();
     list.innerHTML = '<li class="muted">لا توجد مركبات مطابقة</li>';
     return;
   }
 
-  for (const d of visible) {
-    const li = document.createElement('li');
-    li.className = 'device-item';
-    // Only genuine loss of contact greys a vehicle out. A sleeping device
-    // still shows its lock state, because that is what operators care about.
-    li.classList.add(
-      connectionState(d) === 'offline'
-        ? 'is-offline'
-        : d.motor_locked === false
-          ? 'is-unlocked'
-          : 'is-locked',
-    );
-    if (d.device_id === state.selectedId) li.classList.add('selected');
+  // The empty-state <li> carries no device id, so it is swept here rather than
+  // being left behind above the real rows.
+  for (const li of list.querySelectorAll('li:not([data-device-id])')) li.remove();
 
-    li.innerHTML = `
-      <div class="row">
-        <span class="name">${escapeHtml(d.name)}</span>
-        ${lockPill(d)}
-      </div>
-      <div class="row">
-        <span class="muted">${escapeHtml(d.plate_number ?? d.device_id)}</span>
-        <span class="muted">${batteryLabel(d)} · ${fmtAgo(d.last_position_at ?? d.last_seen_at)}${positionIsLagging(d) ? ' ⏳' : ''}</span>
-      </div>`;
-    li.addEventListener('click', () => selectDevice(d.device_id));
-    list.appendChild(li);
+  const wanted = new Set(visible.map((d) => d.deviceId));
+  for (const [id, row] of deviceRows) {
+    if (!wanted.has(id)) {
+      row.li.remove();
+      deviceRows.delete(id);
+    }
+  }
+
+  // Rebuilt only where something actually changed. A fleet where one truck
+  // moved touches one row.
+  let previous = null;
+  for (const d of visible) {
+    let row = deviceRows.get(d.deviceId);
+    if (!row) {
+      const li = document.createElement('li');
+      li.dataset.deviceId = d.deviceId;
+      row = { li, html: null, cls: null };
+      deviceRows.set(d.deviceId, row);
+    }
+
+    const html = deviceRowHtml(d);
+    if (html !== row.html) {
+      row.li.innerHTML = html;
+      row.html = html;
+    }
+    const cls = deviceRowClass(d);
+    if (cls !== row.cls) {
+      row.li.className = cls;
+      row.cls = cls;
+    }
+
+    // Keep the DOM in the same order as `visible` without moving rows that are
+    // already in place: a node re-inserted where it already is still costs a
+    // reflow, and at 3,000 rows that is the whole saving.
+    const shouldFollow = previous ? previous.nextElementSibling : list.firstElementChild;
+    if (shouldFollow !== row.li) {
+      list.insertBefore(row.li, previous ? previous.nextElementSibling : list.firstElementChild);
+    }
+    previous = row.li;
   }
 }
 
@@ -558,9 +647,9 @@ function renderDeviceList() {
 const SLEEP_GRACE_MS = 45 * 60 * 1000;
 
 function connectionState(d) {
-  if (d.is_connected) return 'connected';
-  if (!d.last_seen_at) return 'offline';
-  return Date.now() - new Date(d.last_seen_at) < SLEEP_GRACE_MS ? 'sleeping' : 'offline';
+  if (d.online) return 'connected';
+  if (!d.lastSeenAt) return 'offline';
+  return Date.now() - new Date(d.lastSeenAt) < SLEEP_GRACE_MS ? 'sleeping' : 'offline';
 }
 
 /**
@@ -574,9 +663,9 @@ function connectionState(d) {
 const UNLOCK_STALE_MS = 3 * 60 * 1000;
 
 function isUnlockReadingStale(d) {
-  if (d.motor_locked !== false || d.is_connected) return false;
-  if (!d.last_position_at) return true;
-  return Date.now() - new Date(d.last_position_at) > UNLOCK_STALE_MS;
+  if (d.locked !== false || d.online) return false;
+  if (!d.lastPositionAt) return true;
+  return Date.now() - new Date(d.lastPositionAt) > UNLOCK_STALE_MS;
 }
 
 function lockPill(d) {
@@ -585,7 +674,7 @@ function lockPill(d) {
 
   const lock = isUnlockReadingStale(d)
     ? '<span class="pill pill-warn" title="قد يكون الجهاز أُقفل تلقائياً بعد ذلك">مفتوح؟</span>'
-    : d.motor_locked === false
+    : d.locked === false
       ? '<span class="pill pill-danger">مفتوح</span>'
       : '<span class="pill pill-ok">مقفل</span>';
 
@@ -598,13 +687,13 @@ function lockPill(d) {
  * which case battery_percent is null and only the state is known.
  */
 function batteryLabel(d) {
-  if (d.battery_percent == null) return d.charging ? 'قيد الشحن' : '—';
-  return d.charging ? `${d.battery_percent}% (شحن)` : `${d.battery_percent}%`;
+  if (d.batteryPercent == null) return d.charging ? 'قيد الشحن' : '—';
+  return d.charging ? `${d.batteryPercent}% (شحن)` : `${d.batteryPercent}%`;
 }
 
 /** GSM signal is 0-31; 99 means the device saw no network at all. */
 function signalLabel(d) {
-  const v = d.gsm_signal;
+  const v = d.gsmSignal;
   if (v == null) return 'لا توجد إشارة';
   const bars = v >= 20 ? 'ممتازة' : v >= 14 ? 'جيدة' : v >= 8 ? 'ضعيفة' : 'ضعيفة جداً';
   return `${v}/31 · ${bars}`;
@@ -619,7 +708,7 @@ function carrierLabel(d) {
 }
 
 async function renderDetail() {
-  const d = state.devices.find((x) => x.device_id === state.selectedId);
+  const d = state.devices.find((x) => x.deviceId === state.selectedId);
   const panel = $('detail');
   if (!d) {
     panel.hidden = true;
@@ -628,7 +717,7 @@ async function renderDetail() {
   panel.hidden = false;
 
   $('d-name').textContent = d.name;
-  $('d-plate').textContent = `${d.plate_number ?? '—'} · ${d.device_id}`;
+  $('d-plate').textContent = `${d.plateNumber ?? '—'} · ${d.deviceId}`;
   $('d-lock').innerHTML = lockPill(d);
   // Say why the reading is uncertain, rather than leaving a bare question mark.
   $('d-lock-note').textContent = isUnlockReadingStale(d)
@@ -636,53 +725,69 @@ async function renderDetail() {
     : '';
   $('d-lock-note').hidden = !isUnlockReadingStale(d);
   $('d-battery').textContent = batteryLabel(d);
-  $('d-speed').textContent = d.speed_kph != null ? `${Number(d.speed_kph).toFixed(0)} كم/س` : '—';
+  $('d-speed').textContent = d.speedKph != null ? `${Number(d.speedKph).toFixed(0)} كم/س` : '—';
   $('d-signal').textContent = signalLabel(d);
   $('d-heading').textContent = headingLabel(d);
   $('d-sats').textContent = d.satellites ?? '—';
-  $('d-rope').textContent = d.rope_inserted == null ? '—' : d.rope_inserted ? 'مُدخَل' : 'مسحوب';
+  $('d-rope').textContent = d.ropeInserted == null ? '—' : d.ropeInserted ? 'مُدخَل' : 'مسحوب';
   // The odometer is a lifetime counter, useful for servicing but useless for
   // "what did this truck do today" — so the per-period figures lead.
-  const km = (v) => (v == null ? '—' : `${Math.round(Number(v))} كم`);
-  $('d-dist-today').textContent = km(d.today_km);
-  $('d-dist-week').textContent = km(d.week_km);
-  $('d-mileage').textContent = d.mileage_km != null ? `${d.mileage_km} كم` : '—';
+  //
+  // An odometer reset inside the period makes the span meaningless — one reset
+  // reads as about 99,994 km. Say the figure cannot be trusted rather than
+  // printing it: this feeds a Ministry report, and a confident wrong number is
+  // worse than an admitted gap.
+  const km = (v) =>
+    d.mileageHasAnomaly ? 'غير موثوق (تغيّر العدّاد)' : v == null ? '—' : `${Math.round(Number(v))} كم`;
+  $('d-dist-today').textContent = km(d.todayKm);
+  $('d-dist-week').textContent = km(d.weekKm);
+  $('d-mileage').textContent = d.mileageKm != null ? `${d.mileageKm} كم` : '—';
   $('d-carrier').textContent = carrierLabel(d);
   // Lock events arrive 2-5 minutes late, cached in device flash, so this can
   // legitimately lag the live status above. Show the delay rather than hide it.
-  $('d-last-event').textContent = d.last_event_at
-    ? `${EVENT_NAMES[d.last_event_source] ?? d.last_event_source} · ${fmtDateTime(d.last_event_at)}` +
-      (d.last_event_command_id ? ' · بأمر من المنظومة' : '')
+  $('d-last-event').textContent = d.lastEvent
+    ? `${EVENT_NAMES[d.lastEvent.source] ?? d.lastEvent.source} · ${fmtDateTime(d.lastEvent.at)}` +
+      (d.lastEvent.commandId ? ' · بأمر من المنظومة' : '')
     : 'لا يوجد';
-  $('d-devid').textContent = d.device_id;
+  $('d-devid').textContent = d.deviceId;
   $('d-model').textContent = d.model ?? '—';
   $('d-imei').textContent = d.imei ?? '—';
-  $('d-firmware').textContent = d.firmware_version ?? 'غير معروف — أرسل الأمر P01';
+  $('d-firmware').textContent = d.firmwareVersion ?? 'غير معروف — أرسل الأمر P01';
   // Contact and position are different facts. The sub-lock beats every 35
   // seconds, so last_seen_at says "now" while the position can be minutes
   // old - which is exactly when someone stares at a stationary marker
   // wondering why the truck is not moving.
-  $('d-seen').textContent = `${fmtAgo(d.last_seen_at)} (${fmtTime(d.last_seen_at)})`;
-  $('d-posage').textContent = d.last_position_at
-    ? `${fmtAgo(d.last_position_at)} (${fmtTime(d.last_position_at)})`
+  $('d-seen').textContent = `${fmtAgo(d.lastSeenAt)} (${fmtTime(d.lastSeenAt)})`;
+  $('d-posage').textContent = d.lastPositionAt
+    ? `${fmtAgo(d.lastPositionAt)} (${fmtTime(d.lastPositionAt)})`
     : 'لا يوجد';
   $('d-posage').className = positionIsLagging(d) ? 'lagging' : '';
-  $('d-wake').textContent = WAKE_REASONS[d.wake_source] ?? '—';
+  $('d-wake').textContent = WAKE_REASONS[d.wakeSource] ?? '—';
 
   // Say "no fix" plainly rather than drawing a confident dot in the wrong place.
   $('d-pos').textContent = !hasLocation(d)
     ? 'لا يوجد تحديد GPS بعد — الجهاز داخل مبنى'
-    : `${d.latitude.toFixed(5)}, ${d.longitude.toFixed(5)}${d.positioned ? '' : ' (موقع قديم)'}`;
+    : `${d.latitude.toFixed(5)}, ${d.longitude.toFixed(5)}${d.hasCurrentFix ? '' : ' (موقع قديم)'}`;
 
-  const alarms = Object.keys(d.active_alarms ?? {}).filter((k) => d.active_alarms[k]);
+  // `positioned` and `hasCurrentFix` are two different questions and were one
+  // word apart: the first says this row has coordinates, the second says the
+  // NEWEST report carried a fix. It is the second that makes the line above
+  // mark a shown position as the last known one rather than the current one.
+  const alarms = d.alarms ?? [];
   const alarmBox = $('d-alarms');
   alarmBox.hidden = alarms.length === 0;
   alarmBox.innerHTML = alarms.length
     ? `<strong>تنبيهات نشطة:</strong><br>${alarms.map((a) => ALARM_NAMES[a] ?? a).join('، ')}`
     : '';
 
-  $('unlock-btn').disabled = false;
-  await Promise.all([loadCommands(d.device_id), loadEvents(d.device_id), loadArrivals(d.device_id), loadSubLocks(d.device_id)]);
+  // A view-only account gets the button greyed out with the reason on it,
+  // rather than a button that looks live and returns 403. The route refuses
+  // either way; this is so nobody has to find that out by pressing it.
+  const unlockBtn = $('unlock-btn');
+  unlockBtn.disabled = !state.mayUnlock;
+  unlockBtn.title = state.mayUnlock ? '' : 'هذا الحساب مخوَّل بالمتابعة فقط';
+
+  await Promise.all([loadCommands(d.deviceId), loadEvents(d.deviceId), loadArrivals(d.deviceId), loadSubLocks(d.deviceId)]);
 }
 
 async function loadCommands(deviceId) {
@@ -696,16 +801,22 @@ async function loadCommands(deviceId) {
     list.innerHTML = commands
       .slice(0, 8)
       .map((c) => {
-        const [label, cls] = COMMAND_STATUS[c.status] ?? [c.status, ''];
+        const [label, cls] = COMMAND_STATUS[c.status] ?? [`حالة غير معروفة (${escapeHtml(c.status)})`, 'bad'];
         // Cancellable only while it is still waiting to be delivered. Once
         // sent, the frame is on the wire and offering a cancel would be
-        // promising something the platform cannot do.
+        // promising something the platform cannot do. 'uncertain' is not
+        // cancellable for the same reason, and more so: it may have executed.
         const cancellable = ['queued', 'approved', 'draft', 'pending_approval'].includes(c.status);
+        const cause = c.status === 'failed' && c.failure_cause
+          ? `<div class="muted">${escapeHtml(FAILURE_CAUSE[c.failure_cause] ?? c.failure_cause)}</div>`
+          : '';
         return `<li class="${cls}">
           <div class="cmd-head">
             <strong>${label}</strong>
             ${cancellable ? `<button class="btn btn-ghost btn-xs" data-cancel-cmd="${c.id}">إلغاء</button>` : ''}
           </div>
+          ${evidenceLine(c)}
+          ${cause}
           <div class="muted">${escapeHtml(c.reason ?? '')}</div>
           <div class="when">${fmtDateTime(c.requested_at)} · ${escapeHtml(c.requested_by ?? '')}</div>
         </li>`;
@@ -798,7 +909,7 @@ async function loadEvents(deviceId) {
 
 function selectDevice(deviceId) {
   state.selectedId = deviceId;
-  const d = state.devices.find((x) => x.device_id === deviceId);
+  const d = state.devices.find((x) => x.deviceId === deviceId);
   if (d && hasLocation(d)) state.map.flyTo(d.latitude, d.longitude);
   renderDeviceList();
   renderDetail();
@@ -817,16 +928,16 @@ $('search').addEventListener('input', renderDeviceList);
 // --- Unlock -----------------------------------------------------------------
 
 $('unlock-btn').addEventListener('click', () => {
-  const d = state.devices.find((x) => x.device_id === state.selectedId);
+  const d = state.devices.find((x) => x.deviceId === state.selectedId);
   if (!d) {
     toast('لم يتم اختيار مركبة', 'bad');
     return;
   }
-  $('unlock-device').textContent = `${d.name} (${d.plate_number ?? d.device_id})`;
+  $('unlock-device').textContent = `${d.name} (${d.plateNumber ?? d.deviceId})`;
   $('unlock-reason').value = '';
   // Pin the target to the modal itself. Reading it back from shared state at
   // submit time is how a null device id reached the server.
-  $('unlock-modal').dataset.deviceId = d.device_id;
+  $('unlock-modal').dataset.deviceId = d.deviceId;
   $('unlock-modal').hidden = false;
   $('unlock-reason').focus();
 });
@@ -889,18 +1000,22 @@ async function loadSubLocks(deviceId) {
         '<li class="empty">لا توجد أقفال فرعية معروفة — اضغط "تحديث القائمة" لسؤال الجهاز</li>';
       return;
     }
+    // Read before the map: `state` is shadowed inside it by the lock-state
+    // pill below.
+    const unlockEnabled = state.subLockUnlockEnabled;
+
     list.innerHTML = subs
       .map((s) => {
         // Bound but never heard from: the master lists it, yet it has sent
         // nothing. Normal for a freshly fitted lock with no LoRa heartbeat.
-        const neverReported = !s.last_seen_at;
-        const unbound = !s.bound_confirmed_at && !neverReported;
+        const neverReported = !s.lastSeenAt;
+        const unbound = !s.boundConfirmedAt && !neverReported;
 
         const state = neverReported
           ? '<span class="pill pill-warn">مرتبط — لم يُرسل بعد</span>'
           : unbound
             ? '<span class="pill pill-muted">لم يعد مرتبطاً</span>'
-            : s.comms_lost_alarm
+            : s.commsLost
           ? '<span class="pill pill-danger">انقطع الاتصال بالقفل</span>'
           : s.locked === true
             ? '<span class="pill pill-ok">مقفل</span>'
@@ -912,32 +1027,36 @@ async function loadSubLocks(deviceId) {
         if (neverReported) {
           bits.push('اضغط زر الإيقاظ على القفل ليُرسل حالته لأول مرة');
         }
-        if (s.battery_percent != null) bits.push(`البطارية ${s.battery_percent}%`);
+        if (s.batteryPercent != null) bits.push(`البطارية ${s.batteryPercent}%`);
         if (s.voltage != null) bits.push(`${Number(s.voltage).toFixed(2)} فولت`);
         if (s.rssi != null) bits.push(`إشارة ${s.rssi} dBm`);
-        if (s.rope_pulled_out === true) bits.push('الحبل مسحوب');
-        if (s.back_cover_open === true) bits.push('الغطاء مفتوح');
+        if (s.ropePulledOut === true) bits.push('الحبل مسحوب');
+        if (s.backCoverOpen === true) bits.push('الغطاء مفتوح');
         if (s.charging === true) bits.push('قيد الشحن');
-        if (s.low_voltage_alarm) bits.push('بطارية منخفضة');
-        if (s.lock_cycles != null) bits.push(`${s.lock_cycles} دورة فتح/إقفال`);
-        if (s.temperature_c != null) bits.push(`${s.temperature_c}°م`);
-        if (s.humidity_percent != null) bits.push(`رطوبة ${s.humidity_percent}%`);
+        if (s.lowVoltage) bits.push('بطارية منخفضة');
+        if (s.lockCycles != null) bits.push(`${s.lockCycles} دورة فتح/إقفال`);
+        if (s.temperatureC != null) bits.push(`${s.temperatureC}°م`);
+        if (s.humidityPercent != null) bits.push(`رطوبة ${s.humidityPercent}%`);
 
-        const alarming = s.comms_lost_alarm || s.back_cover_open === true || s.locked === false;
+        const alarming = s.commsLost || s.backCoverOpen === true || s.locked === false;
 
         // Valve locks can be opened; temperature sensors obviously cannot.
-        const unlockable = s.device_type === 'jt709_sub_lock' || s.device_type === 'jt802_valve_lock';
+        // And only while sub-lock unlocking is switched on: there is currently
+        // no way to confirm a valve actually opened, so the capability is off.
+        const unlockable =
+          unlockEnabled &&
+          (s.type === 'jt709_sub_lock' || s.type === 'jt802_valve_lock');
 
         return `<li class="${alarming ? 'bad' : ''}">
           <div class="row">
-            <strong class="ltr-inline">${escapeHtml(s.peripheral_id)}</strong>
+            <strong class="ltr-inline">${escapeHtml(s.peripheralId)}</strong>
             ${state}
           </div>
-          <div class="muted">${SUB_TYPES[s.device_type] ?? s.device_type} · ${bits.map(escapeHtml).join(' · ')}</div>
-          <div class="when">${fmtAgo(s.last_seen_at)}</div>
+          <div class="muted">${SUB_TYPES[s.type] ?? s.type} · ${bits.map(escapeHtml).join(' · ')}</div>
+          <div class="when">${fmtAgo(s.lastSeenAt)}</div>
           ${
             unlockable
-              ? `<button class="btn btn-ghost btn-xs sublock-unlock" data-sub="${escapeHtml(s.peripheral_id)}">فتح هذا القفل</button>`
+              ? `<button class="btn btn-ghost btn-xs sublock-unlock" data-sub="${escapeHtml(s.peripheralId)}">فتح هذا القفل</button>`
               : ''
           }
         </li>`;
@@ -1112,7 +1231,7 @@ $('open-tracking').addEventListener('click', () => {
   $('tracking-page').hidden = false;
   // Reuse the vehicle list already loaded for the map.
   $('trk-device').innerHTML = state.devices
-    .map((d) => `<option value="${d.device_id}">${escapeHtml(d.name)} — ${escapeHtml(d.plate_number ?? d.device_id)}</option>`)
+    .map((d) => `<option value="${d.deviceId}">${escapeHtml(d.name)} — ${escapeHtml(d.plateNumber ?? d.deviceId)}</option>`)
     .join('');
   if (state.selectedId) $('trk-device').value = state.selectedId;
   loadCurrentSettings();
@@ -1345,7 +1464,7 @@ async function drawDestinations(deviceId, arrivals) {
   state.map.clearDestinations();
   state.map.clearRoute?.();
 
-  const device = state.devices.find((d) => d.device_id === deviceId);
+  const device = state.devices.find((d) => d.deviceId === deviceId);
   const from = device && hasLocation(device) ? { lat: device.latitude, lon: device.longitude } : null;
 
   for (const a of arrivals.filter((x) => x.is_armed)) {
@@ -1396,7 +1515,9 @@ $('arrival-form').addEventListener('submit', async (e) => {
         locationId,
         radiusM: radius ? Number(radius) : undefined,
         expiresInHours: Number($('arrival-expiry').value),
-        includeSubLocks: $('arrival-sublocks').checked,
+        // A hidden checkbox can still be checked from an earlier session, so
+        // the flag gates the value rather than the control.
+        includeSubLocks: state.subLockUnlockEnabled && $('arrival-sublocks').checked,
         reason: $('arrival-reason').value.trim(),
       }),
     });
@@ -1431,7 +1552,11 @@ async function loadDevicesPage() {
     api('/api/unknown-devices').catch(() => []),
     api('/api/password-reads').catch(() => []),
   ]);
-  const readsById = new Map(reads.map((r) => [r.device_id, r]));
+  // Keyed on a trimmed id: password-reads is raw SQL over a char(10) column,
+  // while a device's id now arrives trimmed. Both are ten digits today, so
+  // this changes nothing — and stops the lookup failing silently if that
+  // stops being true.
+  const readsById = new Map(reads.map((r) => [r.device_id.trim(), r]));
 
   // Locks that reached the gateway but are not registered. Approving one from
   // here means the id never has to be read off a label and retyped.
@@ -1455,24 +1580,24 @@ async function loadDevicesPage() {
   $('devices-list').innerHTML = devices.length
     ? devices
         .map((d) => {
-          const weak = d.static_password_is_default;
+          const weak = d.staticPasswordIsDefault;
           return `<li>
             <div class="row">
               <strong>${escapeHtml(d.name)}</strong>
               <span>
-                <button class="btn btn-ghost btn-xs" data-commission="${d.device_id}">تهيئة</button>
-                <button class="btn btn-ghost btn-xs" data-readpw="${d.device_id}">قراءة كلمة المرور</button>
-                <button class="btn btn-ghost btn-xs" data-setpw="${d.device_id}">تغيير كلمة المرور</button>
+                <button class="btn btn-ghost btn-xs" data-commission="${d.deviceId}">تهيئة</button>
+                <button class="btn btn-ghost btn-xs" data-readpw="${d.deviceId}">قراءة كلمة المرور</button>
+                <button class="btn btn-ghost btn-xs" data-setpw="${d.deviceId}">تغيير كلمة المرور</button>
               </span>
             </div>
             <div class="muted">
-              <span class="ltr-inline">${d.device_id}</span> · ${escapeHtml(d.plate_number ?? '—')} ·
-              ${d.model ?? '—'}${d.firmware_version ? ` · <span class="ltr-inline">${escapeHtml(d.firmware_version.split('_').slice(0, 2).join('_'))}</span>` : ''}
+              <span class="ltr-inline">${d.deviceId}</span> · ${escapeHtml(d.plateNumber ?? '—')} ·
+              ${d.model ?? '—'}${d.firmwareVersion ? ` · <span class="ltr-inline">${escapeHtml(d.firmwareVersion.split('_').slice(0, 2).join('_'))}</span>` : ''}
               ${weak ? ' · <span class="pill pill-warn">كلمة مرور افتراضية</span>' : ''}
             </div>
             ${
-              readsById.has(d.device_id)
-                ? `<div class="dev-pw">${passwordReadNote(readsById.get(d.device_id))}</div>`
+              readsById.has(d.deviceId)
+                ? `<div class="dev-pw">${passwordReadNote(readsById.get(d.deviceId))}</div>`
                 : ''
             }
           </li>`;
@@ -1640,6 +1765,78 @@ $('open-locations').addEventListener('click', () => {
 });
 $('close-locations').addEventListener('click', () => ($('locations-page').hidden = true));
 
+// --- External integration ---------------------------------------------------
+
+/*
+ * What a partner receives, shown to the operator.
+ *
+ * Rendered from /api/integration-preview, which runs the partner feed's own
+ * query through the partner feed's own shaping functions. It is the feed, not a
+ * description of one: a field that stops being published stops appearing here
+ * in the same deploy, so nobody hands over a token on the strength of a page
+ * that has drifted from what the other side actually gets.
+ */
+async function loadIntegration() {
+  const format = $('integration-format').value;
+  const view = $('integration-json');
+  view.textContent = '…';
+
+  try {
+    const body = await api(`/api/integration-preview?format=${format}`);
+    // Two-space indent: this gets read on screen and pasted into a message to
+    // whoever is building the other side.
+    view.textContent = JSON.stringify(body, null, 2);
+  } catch {
+    view.textContent = '';
+    toast('تعذّر قراءة البيانات', 'bad');
+  }
+
+  const tokens = await api('/api/integration-tokens').catch(() => []);
+  const list = $('integration-tokens');
+  list.innerHTML = tokens.length
+    ? tokens
+        .map(
+          (t) => `<li>
+            <div class="row">
+              <strong>${escapeHtml(t.name)}</strong>
+              <span class="pill ${t.is_active ? 'pill-ok' : 'pill-muted'}">
+                ${t.is_active ? 'فعّال' : 'موقوف'}
+              </span>
+            </div>
+            <div class="muted">
+              ${
+                t.last_used_at
+                  ? `آخر استخدام ${fmtDateTime(t.last_used_at)} · ${t.request_count} طلب`
+                  : 'لم يُستخدم بعد'
+              }
+              · أُنشئ ${fmtDateTime(t.created_at)}${t.created_by ? ` بواسطة ${escapeHtml(t.created_by)}` : ''}
+            </div>
+          </li>`,
+        )
+        .join('')
+    : '<li class="empty">لا توجد مفاتيح — تُصدر من الطرفية على الخادم</li>';
+}
+
+$('open-integration').addEventListener('click', () => {
+  $('integration-page').hidden = false;
+  loadIntegration();
+});
+$('close-integration').addEventListener('click', () => ($('integration-page').hidden = true));
+$('integration-format').addEventListener('change', loadIntegration);
+$('integration-refresh').addEventListener('click', loadIntegration);
+
+$('integration-copy').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText($('integration-json').textContent);
+    toast('نُسخت البيانات', 'ok');
+  } catch {
+    // Clipboard access is refused outside a secure context, and the console is
+    // reachable over plain HTTP when it is reached by IP. Say so rather than
+    // failing silently — the text is on screen and can be selected by hand.
+    toast('تعذّر النسخ — حدّد النص وانسخه يدوياً', 'bad');
+  }
+});
+
 $('location-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const coords = parseCoords($('loc-coords').value);
@@ -1677,25 +1874,17 @@ async function openHistory() {
 
   const sel = $('hist-device');
   sel.innerHTML = state.devices
-    .map((d) => `<option value="${d.device_id}">${escapeHtml(d.name)}</option>`)
+    .map((d) => `<option value="${d.deviceId}">${escapeHtml(d.name)}</option>`)
     .join('');
   if (state.selectedId) sel.value = state.selectedId;
 
   // Its own map instance: past travel is a review activity, and drawing it on
   // the live map buried the present under the past.
   if (!historyMap) {
-    const { googleMapsApiKey, arcgisApiKey, arcgisVersion } = await api('/api/config');
+    const { arcgisApiKey } = await api('/api/config');
     const { createMap } = await import('/map.js');
-    // Follows the same basemap the operator chose on the live map, so the
-    // history view does not silently show a different world.
-    historyMap = await createMap(
-      $('history-map'),
-      googleMapsApiKey,
-      () => {},
-      mapTheme(),
-      chosenBasemap(googleMapsApiKey, arcgisApiKey),
-      { apiKey: arcgisApiKey, version: arcgisVersion },
-    );
+    // The same basemap as the live map, necessarily: there is only one.
+    historyMap = await createMap($('history-map'), () => {}, arcgisApiKey);
   }
   loadHistory();
 }
@@ -1703,13 +1892,23 @@ async function openHistory() {
 /** Trailing window, or an explicit from/to when "فترة محددة" is chosen. */
 function historyRange() {
   const raw = $('hist-range').value;
-  if (raw !== 'custom') return { query: `hours=${Number(raw)}`, label: rangeLabel(Number(raw)) };
+  if (raw !== 'custom') {
+    const hours = Number(raw);
+    return {
+      query: `hours=${hours}`,
+      label: rangeLabel(hours),
+      from: Date.now() - hours * 3600 * 1000,
+      to: null,
+    };
+  }
 
   // datetime-local gives a wall-clock string with no zone; the browser reads
   // it in the operator's own zone, which is what they meant by typing it.
   const from = $('hist-from').value ? new Date($('hist-from').value) : null;
   const to = $('hist-to').value ? new Date($('hist-to').value) : null;
-  if (!from && !to) return { query: 'hours=12', label: rangeLabel(12) };
+  if (!from && !to) {
+    return { query: 'hours=12', label: rangeLabel(12), from: Date.now() - 12 * 3600 * 1000, to: null };
+  }
 
   const params = new URLSearchParams();
   if (from) params.set('from', from.toISOString());
@@ -1717,6 +1916,8 @@ function historyRange() {
   return {
     query: params.toString(),
     label: `${from ? fmtDateTime(from.toISOString()) : '…'} — ${to ? fmtDateTime(to.toISOString()) : 'الآن'}`,
+    from: from ? from.getTime() : null,
+    to: to ? to.getTime() : null,
   };
 }
 
@@ -1786,10 +1987,15 @@ async function loadHistory() {
 
   // Lock activity for the same window, so the review reads as one story:
   // where it drove, and what the lock did along the way.
-  const since = Date.now() - hours * 3600 * 1000;
-  const events = (await api(`/api/devices/${deviceId}/events`).catch(() => [])).filter(
-    (e) => new Date(e.reported_at) >= since,
-  );
+  //
+  // The bounds come from the same range object the track was fetched with.
+  // Deriving them a second time here is what left this referencing an `hours`
+  // that stopped existing when the custom range landed: it threw on every
+  // render of this page, after the trail was drawn but before any event was.
+  const events = (await api(`/api/devices/${deviceId}/events`).catch(() => [])).filter((e) => {
+    const t = new Date(e.reported_at).getTime();
+    return (range.from === null || t >= range.from) && (range.to === null || t <= range.to);
+  });
   $('history-events').innerHTML = events.length
     ? events
         .map((e) => {
@@ -1887,12 +2093,18 @@ function renderConnectionStatus() {
 }
 
 /**
- * Apply one pushed change.
+ * Apply one pushed change, or a batch of them.
  *
  * The server sends the changed vehicle's row with the notification, so the
- * common case patches a single entry instead of refetching the fleet. The
- * bare-nudge form is still honoured, because a malformed or partial payload
- * must never leave the console silently out of date.
+ * common case patches entries instead of refetching the fleet. Two shapes are
+ * accepted: the original `{ deviceId, device }` and a batch
+ * `{ devices: [...] }`, so a server that batches its flushes and a console that
+ * has not been reloaded yet keep working with each other.
+ *
+ * A vehicle not already in the list is ADDED, not refetched. Falling through to
+ * a full-fleet `/api/devices` on an unknown id was a feedback loop that fired
+ * hardest exactly when the database was already struggling — every open console
+ * refetching all 3,000 rows on every flush.
  */
 function applyUpdate(raw) {
   let msg;
@@ -1902,16 +2114,38 @@ function applyUpdate(raw) {
     return void refresh();
   }
 
-  if (!msg?.deviceId || !msg.device) return void refresh();
+  const incoming = Array.isArray(msg?.devices)
+    ? msg.devices
+    : msg?.deviceId && msg.device
+      ? [msg.device]
+      : null;
 
-  const i = state.devices.findIndex((d) => d.device_id === msg.deviceId);
-  if (i === -1) return void refresh(); // a vehicle we do not know yet
-  state.devices[i] = msg.device;
+  // A bare nudge with no payload at all is still honoured: a malformed or
+  // partial message must never leave the console silently out of date.
+  if (!incoming) return void refresh();
+
+  const byId = new Map(state.devices.map((d, i) => [d.deviceId, i]));
+  let touchedSelected = false;
+
+  for (const device of incoming) {
+    // The pushed row is the console projection, so the key is `deviceId` —
+    // the database's `device_id` never reaches the browser. Guarding on the
+    // column name skipped every update and left the map frozen until reload.
+    if (!device?.deviceId) continue;
+    const i = byId.get(device.deviceId);
+    if (i === undefined) {
+      byId.set(device.deviceId, state.devices.length);
+      state.devices.push(device);
+    } else {
+      state.devices[i] = device;
+    }
+    if (state.selectedId === device.deviceId) touchedSelected = true;
+  }
 
   renderDeviceList();
   syncMarkers();
   followSelected();
-  if (state.selectedId === msg.deviceId) renderDetail();
+  if (touchedSelected) renderDetail();
 }
 
 function setStatus(text, cls) {
@@ -1937,7 +2171,7 @@ async function refresh() {
  */
 function followSelected() {
   if (!state.follow || !state.selectedId || !state.map) return;
-  const d = state.devices.find((x) => x.device_id === state.selectedId);
+  const d = state.devices.find((x) => x.deviceId === state.selectedId);
   if (d && hasLocation(d)) state.map.panTo(d.latitude, d.longitude);
 }
 
@@ -1971,8 +2205,15 @@ async function start() {
 
 (async () => {
   try {
-    const { authenticated } = await fetch('/api/session').then((r) => r.json());
-    if (authenticated) return start();
+    const { authenticated, mayUnlock, username } = await fetch('/api/session').then((r) => r.json());
+    if (authenticated) {
+      // Carried so the console can hide controls this account cannot use. The
+      // routes enforce it regardless — a hidden button is a courtesy, not a
+      // permission check.
+      state.mayUnlock = mayUnlock === true;
+      state.username = username ?? null;
+      return start();
+    }
   } catch {
     // Network or server unavailable — fall through to the login screen rather
     // than leaving the page in whatever state the markup happened to start in.

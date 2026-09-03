@@ -1,0 +1,210 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "How Data Moves: Lock to Map, and Back",
+    "locale": "en",
+    "output": "zee-data-path.html",
+    "viewBox": [
+      1050,
+      560
+    ],
+    "column_fit": "spread",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "up-to-the-map",
+        "label": "Up: the truck reports",
+        "focus": [
+          "lock",
+          "gateway",
+          "db",
+          "api",
+          "console"
+        ],
+        "note": "A position arrives over TCP and reaches the operator's map without anyone asking for it."
+      },
+      {
+        "id": "down-to-the-lock",
+        "label": "Down: the operator unlocks",
+        "focus": [
+          "console",
+          "api",
+          "db",
+          "gateway",
+          "lock"
+        ],
+        "note": "An unlock becomes a row in a table before it becomes bytes on a socket."
+      },
+      {
+        "id": "the-meeting-point",
+        "label": "The meeting point",
+        "focus": [
+          "gateway",
+          "db",
+          "api"
+        ],
+        "note": "The two processes never call each other. Both talk to the database, and the database announces."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "lock",
+      "type": "external",
+      "label": "JT701D Lock",
+      "sublabel": "on the tanker"
+    },
+    {
+      "id": "gateway",
+      "type": "backend",
+      "label": "Gateway",
+      "sublabel": "owns the TCP socket"
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "record, queue, rules"
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "API",
+      "sublabel": "serves the browser"
+    },
+    {
+      "id": "console",
+      "type": "frontend",
+      "label": "Operator Console",
+      "sublabel": "browser"
+    }
+  ],
+  "segments": [
+    {
+      "from": 148,
+      "to": 292,
+      "label": "Up — the truck reports, the map moves"
+    },
+    {
+      "from": 302,
+      "to": 494,
+      "label": "Down — the operator unlocks, the lock opens"
+    }
+  ],
+  "messages": [
+    {
+      "from": "lock",
+      "to": "gateway",
+      "y": 176,
+      "label": "position over the open TCP socket",
+      "variant": "emphasis",
+      "note": "The socket stays open while the truck is awake. No HTTP anywhere on this path."
+    },
+    {
+      "from": "gateway",
+      "to": "db",
+      "y": 208,
+      "label": "write position and live state",
+      "variant": "emphasis"
+    },
+    {
+      "from": "db",
+      "to": "api",
+      "y": 240,
+      "label": "NOTIFY: this truck changed",
+      "variant": "dashed",
+      "note": "The database announces its own write. The API then reads that one row — never the fleet."
+    },
+    {
+      "from": "api",
+      "to": "console",
+      "y": 272,
+      "label": "push that one vehicle over WebSocket",
+      "variant": "emphasis"
+    },
+    {
+      "from": "console",
+      "to": "api",
+      "y": 318,
+      "label": "unlock, with a reason",
+      "variant": "emphasis"
+    },
+    {
+      "from": "api",
+      "to": "db",
+      "y": 349,
+      "label": "write a command row: queued",
+      "variant": "emphasis",
+      "note": "The API never speaks to the gateway. It writes a row, and its job ends there."
+    },
+    {
+      "from": "db",
+      "to": "gateway",
+      "y": 380,
+      "label": "NOTIFY: command for this truck",
+      "variant": "dashed"
+    },
+    {
+      "from": "gateway",
+      "to": "lock",
+      "y": 411,
+      "label": "bytes on that same open socket",
+      "variant": "emphasis",
+      "note": "If the truck is asleep the row waits in the table, and expires on its own if it waits too long."
+    },
+    {
+      "from": "lock",
+      "to": "gateway",
+      "y": 442,
+      "label": "device answers",
+      "variant": "return"
+    },
+    {
+      "from": "gateway",
+      "to": "db",
+      "y": 473,
+      "label": "status: confirmed",
+      "variant": "default",
+      "note": "This write announces itself too, so the result reaches the map the way a position does."
+    }
+  ],
+  "activations": [
+    {
+      "participant": "gateway",
+      "from": 170,
+      "to": 218,
+      "type": "backend"
+    },
+    {
+      "participant": "db",
+      "from": 202,
+      "to": 250,
+      "type": "database"
+    },
+    {
+      "participant": "api",
+      "from": 234,
+      "to": 282,
+      "type": "backend"
+    },
+    {
+      "participant": "api",
+      "from": 312,
+      "to": 359,
+      "type": "backend"
+    },
+    {
+      "participant": "db",
+      "from": 343,
+      "to": 390,
+      "type": "database"
+    },
+    {
+      "participant": "gateway",
+      "from": 374,
+      "to": 483,
+      "type": "backend"
+    }
+  ]
+}

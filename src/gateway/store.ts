@@ -3,12 +3,60 @@
 import { pool, type Db } from '../db.ts';
 import type { LockEventFrame, PositionFrame } from '../protocol/index.ts';
 
-export async function isKnownDevice(deviceId: string): Promise<boolean> {
-  const { rowCount } = await pool.query(
-    'SELECT 1 FROM devices WHERE device_id = $1 AND is_active',
+/**
+ * Why a command failed, mirroring the CHECK in 014_command_evidence.sql.
+ *
+ * The distinction that matters is `device_rejected` versus everything else:
+ * only the device answering "no" says anything about whether the password we
+ * hold is right, and only that may feed the repeated-failure lockout. A socket
+ * that broke says nothing about the password.
+ */
+export type FailureCause =
+  | 'device_rejected'
+  | 'transport'
+  | 'no_response'
+  | 'cancelled'
+  | 'unclassified';
+
+/**
+ * Check the allowlist and mark the device connected, in one round trip.
+ *
+ * These were two queries asking overlapping questions — "is this device
+ * allowed?" then "record that it is connected" — run back to back on every
+ * connect. At two devices that is nothing. When the whole fleet reconnects
+ * after a gateway restart it is 6,000 statements in about a minute, against a
+ * pool that is simultaneously absorbing the replayed position backlog.
+ *
+ * Called only from the gateway's session registry, which is the sole writer of
+ * is_connected. See the invariant in src/gateway/index.ts.
+ *
+ * Returns whether the device is on the allowlist. When it is not, nothing is
+ * written: the data-modifying CTE selects from `known`, which is empty, so the
+ * INSERT has no rows to insert. The device_state row is left alone rather than
+ * being created for a device the platform does not recognise.
+ *
+ * The allowlist is the only authentication this protocol has, so this answer is
+ * the whole of the gateway's access control.
+ */
+export async function admitDevice(deviceId: string): Promise<boolean> {
+  const { rows } = await pool.query<{ known: boolean }>(
+    `WITH known AS (
+       SELECT device_id FROM devices WHERE device_id = $1 AND is_active
+     ),
+     admitted AS (
+       INSERT INTO device_state (device_id, is_connected, connected_at, last_seen_at, updated_at)
+       SELECT device_id, true, now(), now(), now() FROM known
+       ON CONFLICT (device_id) DO UPDATE SET
+         is_connected = true,
+         connected_at = now(),
+         last_seen_at = now(),
+         updated_at   = now()
+       RETURNING device_id
+     )
+     SELECT EXISTS (SELECT 1 FROM known) AS known`,
     [deviceId],
   );
-  return rowCount === 1;
+  return rows[0]?.known === true;
 }
 
 /** Anonymous probe traffic, counted rather than stored. */
@@ -129,6 +177,9 @@ export async function insertPosition(p: PositionFrame, db: Db = pool): Promise<b
  * Guarded on reported_at so an out-of-order blind-area replay cannot overwrite
  * a newer live position — the device sends real-time data first by default,
  * so history routinely arrives after the present.
+ *
+ * Also the one place the device's clock offset is sampled. See
+ * `clockOffsetSample` below for why it happens here and not at the handshake.
  */
 export async function updateDeviceState(p: PositionFrame, db: Db = pool): Promise<void> {
   const alarms = Object.fromEntries(
@@ -136,17 +187,47 @@ export async function updateDeviceState(p: PositionFrame, db: Db = pool): Promis
   );
 
   await db.query(
-    `INSERT INTO device_state (
+    /*
+     * The daily odometer rollup rides along in the same statement.
+     *
+     * A data-modifying CTE always executes, whether or not the primary query
+     * reads it, so this costs no extra round trip — which matters because this
+     * runs on every position frame from every truck.
+     *
+     * It is NOT inside the freshness guard below. A replayed blind-area frame
+     * must not rewind the live snapshot, but it is still a true reading for its
+     * own day and belongs in that day's span.
+     */
+    `WITH rollup AS (
+       INSERT INTO device_mileage_daily
+         (device_id, local_day, first_km, last_km, latest_reported_at, km_at_latest, updated_at)
+       VALUES ($1, ($2::timestamptz AT TIME ZONE 'Africa/Tripoli')::date, $16::integer, $16, $2, $16, now())
+       ON CONFLICT (device_id, local_day) DO UPDATE SET
+         first_km = least(device_mileage_daily.first_km, EXCLUDED.first_km),
+         last_km  = greatest(device_mileage_daily.last_km, EXCLUDED.last_km),
+         latest_reported_at =
+           greatest(device_mileage_daily.latest_reported_at, EXCLUDED.latest_reported_at),
+         -- Only a genuinely newer reading moves this. That is what keeps
+         -- has_anomaly meaning "the odometer went backwards" rather than
+         -- "some history arrived late".
+         km_at_latest = CASE
+           WHEN EXCLUDED.latest_reported_at >= device_mileage_daily.latest_reported_at
+           THEN EXCLUDED.km_at_latest ELSE device_mileage_daily.km_at_latest END,
+         updated_at = now()
+     )
+     INSERT INTO device_state (
        device_id, last_seen_at, last_position_at, location, positioned,
        speed_kph, heading_deg, satellites, battery_percent, charging,
        motor_locked, rope_inserted, gsm_signal, wake_source, active_alarms,
-       mileage_km, mcc, mnc, is_connected, updated_at
+       mileage_km, mcc, mnc, clock_offset_ms, clock_offset_at, updated_at
      ) VALUES (
        $1, now(), $2,
        CASE WHEN $3::double precision IS NULL THEN NULL
             ELSE ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography END,
        $5,
-       $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, true, now()
+       $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+       $19, CASE WHEN $19::bigint IS NOT NULL THEN now() END,
+       now()
      )
      ON CONFLICT (device_id) DO UPDATE SET
        last_seen_at     = now(),
@@ -169,7 +250,14 @@ export async function updateDeviceState(p: PositionFrame, db: Db = pool): Promis
        mileage_km       = EXCLUDED.mileage_km,
        mcc              = EXCLUDED.mcc,
        mnc              = EXCLUDED.mnc,
-       is_connected     = true,
+       -- NULL means this frame was not eligible to be sampled, not that the
+       -- offset is unknown. Keep whatever was last measured.
+       clock_offset_ms  = COALESCE(EXCLUDED.clock_offset_ms, device_state.clock_offset_ms),
+       clock_offset_at  = COALESCE(EXCLUDED.clock_offset_at, device_state.clock_offset_at),
+       -- is_connected is deliberately absent. The ingest path is the third
+       -- writer that made the connection flag unreliable: it asserted true on
+       -- every position frame, including a blind-area replay from a truck that
+       -- had already hung up. Only the gateway's session registry writes it.
        updated_at       = now()
      WHERE device_state.last_position_at IS NULL
         OR device_state.last_position_at <= EXCLUDED.last_position_at`,
@@ -192,6 +280,7 @@ export async function updateDeviceState(p: PositionFrame, db: Db = pool): Promis
       p.mileageKm,
       p.mcc,
       p.mnc,
+      clockOffsetSample(p),
     ],
   );
 
@@ -205,6 +294,29 @@ export async function updateDeviceState(p: PositionFrame, db: Db = pool): Promis
   }
 }
 
+/**
+ * How far this device's clock is from ours, in milliseconds, or null if this
+ * frame is not allowed to say.
+ *
+ * Only a real-time frame may be sampled. Blind-area (type 3) and backlog
+ * (type 4) frames are deliberately old — sampling one would record a device as
+ * hours behind when its clock is fine, and that wrong correction would then be
+ * used to attribute a lock event to the wrong command.
+ *
+ * The plan proposed taking this from the time-sync handshake. That is not
+ * possible: the P22,2 frame is a bare request for the time and carries no
+ * device timestamp. A position frame carries reportedAt from the same clock
+ * that stamps a P45, which is the clock actually being corrected.
+ *
+ * Network latency makes the device look a fraction of a second behind. The
+ * windows this feeds are measured in tens of seconds and minutes, so it does
+ * not matter and is not corrected for.
+ */
+export function clockOffsetSample(p: PositionFrame): number | null {
+  if (p.isHistorical || p.isBacklog) return null;
+  return p.reportedAt.getTime() - Date.now();
+}
+
 /** Store the firmware string from a P01 response. */
 export async function recordFirmware(deviceId: string, firmware: string): Promise<void> {
   await pool.query(
@@ -214,7 +326,12 @@ export async function recordFirmware(deviceId: string, firmware: string): Promis
 }
 
 export async function insertLockEvent(e: LockEventFrame): Promise<number | null> {
-  const { rows } = await pool.query<{ id: number }>(
+  const { rows } = await pool.query<{
+    id: number;
+    reported_at: Date;
+    event_source_name: string;
+    unlock_allowed: boolean;
+  }>(
     `INSERT INTO lock_events (
        device_id, reported_at, location, positioned, speed_kph,
        event_source, event_source_name, verification_code, unlock_allowed,
@@ -225,7 +342,7 @@ export async function insertLockEvent(e: LockEventFrame): Promise<number | null>
        $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
      )
      ON CONFLICT (device_id, reported_at, event_serial) DO NOTHING
-     RETURNING id`,
+     RETURNING id, reported_at, event_source_name, unlock_allowed`,
     [
       e.deviceId,
       e.reportedAt,
@@ -248,7 +365,34 @@ export async function insertLockEvent(e: LockEventFrame): Promise<number | null>
       e.raw,
     ],
   );
-  return rows[0]?.id ?? null;
+
+  const inserted = rows[0];
+  if (!inserted) return null;
+
+  /*
+   * Keep the newest lock event on the device row.
+   *
+   * The device list used to find it with a per-device LATERAL, on a query that
+   * runs on every position frame. Lock events are a handful per device per day,
+   * so writing it here costs nothing measurable and the subquery disappears.
+   *
+   * Guarded on reported_at: a P45 is cached in flash and delivered late, so an
+   * older event routinely arrives after a newer one and must not overwrite it.
+   * lock_events remains the record; this is only a cache of its newest entry.
+   */
+  await pool.query(
+    `UPDATE device_state
+        SET last_event_at         = $2,
+            last_event_source     = $3,
+            last_event_allowed    = $4,
+            last_event_command_id = NULL,
+            updated_at            = now()
+      WHERE device_id = $1
+        AND (last_event_at IS NULL OR last_event_at <= $2)`,
+    [e.deviceId, inserted.reported_at, inserted.event_source_name, inserted.unlock_allowed],
+  );
+
+  return inserted.id;
 }
 
 /**
@@ -261,7 +405,7 @@ export async function insertLockEvent(e: LockEventFrame): Promise<number | null>
 export async function recordPeripheralReading(
   masterId: string,
   p: import('../protocol/decode-peripheral.ts').DecodedPeripheral,
-): Promise<void> {
+): Promise<number | null> {
   const fields = [
     p.peripheralId,
     masterId,
@@ -319,14 +463,20 @@ export async function recordPeripheralReading(
 
   // Keep every reading. Replayed data is flagged rather than dropped: it is
   // still a true record of what the sub-lock did, just delivered late.
-  await pool.query(
+  //
+  // The id comes back so a reading that says "this valve is open" can be cited
+  // as a command's physical evidence. A duplicate returns no row — there is no
+  // new evidence in a report already held, and re-confirming from it would put
+  // a fresh timestamp on an old fact.
+  const { rows } = await pool.query<{ id: number }>(
     `INSERT INTO sub_device_readings (
        peripheral_id, master_id, reported_at, voltage, battery_percent, rssi,
        event_code, event_name, locked, rope_pulled_out, back_cover_open,
        charging, lock_cycles, rfid_card, comms_lost_alarm, low_voltage_alarm,
        temperature_c, humidity_percent, reupload, sensor_serial, raw_hex
      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
-     ON CONFLICT (peripheral_id, reported_at, sensor_serial) DO NOTHING`,
+     ON CONFLICT (peripheral_id, reported_at, sensor_serial) DO NOTHING
+     RETURNING id`,
     [
       p.peripheralId,
       masterId,
@@ -351,6 +501,7 @@ export async function recordPeripheralReading(
       p.raw.toString('hex'),
     ],
   );
+  return rows[0]?.id ?? null;
 }
 
 export async function recordDynamicPassword(deviceId: string, password: string): Promise<void> {
@@ -360,6 +511,14 @@ export async function recordDynamicPassword(deviceId: string, password: string):
   );
 }
 
+/**
+ * The only write to device_state.is_connected in the codebase.
+ *
+ * Called from the gateway's session registry and nowhere else — see the
+ * invariant in src/gateway/index.ts. If you are about to call this from a
+ * session or from the ingest path, that is the bug this comment exists to
+ * prevent.
+ */
 export async function setConnected(deviceId: string, connected: boolean): Promise<void> {
   await pool.query(
     `INSERT INTO device_state (device_id, is_connected, connected_at, last_seen_at, updated_at)
@@ -402,7 +561,12 @@ export interface PendingCommand {
   id: number;
   device_id: string;
   command_type: string;
-  payload: string;
+  /**
+   * Null when a credential the payload needs is not on record — the queue holds
+   * placeholders, not passwords, and they are filled in at dispatch. The caller
+   * must refuse to send it rather than putting a malformed frame on the wire.
+   */
+  payload: string | null;
   expires_at: Date;
 }
 
@@ -416,12 +580,15 @@ export interface PendingCommand {
  * commissioning sequence.
  */
 export async function claimPendingCommands(deviceId: string): Promise<PendingCommand[]> {
-  await pool.query(
-    `UPDATE commands SET status = 'expired'
-      WHERE device_id = $1 AND status IN ('queued','approved') AND expires_at <= now()`,
-    [deviceId],
-  );
-
+  // The per-device expiry UPDATE that used to run here is gone. It fired on
+  // every drain — twice per device per sweep at fleet scale, almost always
+  // updating nothing — and it could only ever reach a truck that was connected,
+  // so a lapsed unlock on a sleeping one stayed 'queued' to the operator
+  // forever. expireLapsedCommands does it once per sweep for the whole fleet.
+  //
+  // The claim below still refuses an expired command on its own
+  // (`expires_at > now()`), so nothing lapsed can be dispatched in the window
+  // between one sweep and the next.
   const { rows } = await pool.query<PendingCommand>(
     `WITH claimed AS (
        SELECT id FROM commands
@@ -432,12 +599,37 @@ export async function claimPendingCommands(deviceId: string): Promise<PendingCom
         ORDER BY requested_at ASC
         LIMIT 20
         FOR UPDATE SKIP LOCKED
+     ),
+     upd AS (
+       UPDATE commands c
+          SET status = 'sent', sent_at = now(), attempts = c.attempts + 1
+         FROM claimed
+        WHERE c.id = claimed.id
+        RETURNING c.id, c.device_id, c.command_type, c.payload, c.expires_at, c.metadata
      )
-     UPDATE commands c
-        SET status = 'sent', sent_at = now(), attempts = c.attempts + 1
-       FROM claimed
-      WHERE c.id = claimed.id
-      RETURNING c.id, c.device_id, c.command_type, c.payload, c.expires_at`,
+     /*
+      * Fill in the credentials the queue deliberately does not hold.
+      *
+      * commands.payload keeps a row for the life of the authorisation and is
+      * readable by anyone with database access, so it stores placeholders and
+      * the real values are substituted here, at the last possible moment.
+      *
+      * A missing value yields NULL rather than a frame reading "(P43,)" — the
+      * caller refuses to send a null payload. Checked per placeholder, because
+      * a blanket replace() with a NULL argument would null out every ordinary
+      * payload that has no placeholder in it at all.
+      */
+     SELECT u.id, u.device_id, u.command_type, u.expires_at,
+            CASE
+              WHEN u.payload LIKE '%{{static_password}}%' AND d.static_password IS NULL THEN NULL
+              WHEN u.payload LIKE '%{{new_password}}%' AND u.metadata->>'newPassword' IS NULL THEN NULL
+              ELSE replace(
+                     replace(u.payload, '{{static_password}}', COALESCE(d.static_password, '')),
+                     '{{new_password}}', COALESCE(u.metadata->>'newPassword', '')
+                   )
+            END AS payload
+       FROM upd u
+       JOIN devices d ON d.device_id = u.device_id`,
     [deviceId],
   );
   return rows;
@@ -466,127 +658,397 @@ export async function queueLockStateRefresh(deviceId: string, delayMinutes = 3):
 }
 
 /**
- * Re-queue commands that were sent but never answered.
+ * Which devices have dispatchable work waiting, fleet-wide.
+ *
+ * The sweep used to call drainCommands for every connected session — roughly
+ * 6,000 statements a minute at 3,000 devices, almost all of them finding
+ * nothing. This asks once and the sweep drains only the intersection with the
+ * sessions it actually holds.
+ *
+ * 'uncertain' is deliberately absent, and this is the point at which that
+ * matters most. An uncertain command may already have opened a valve; the whole
+ * reason it is not 'queued' is so that nothing resends it. A due query that
+ * picked it up would undo the timeout policy in one line.
+ *
+ * Served by commands_due_idx (018), which is not device-leading — unlike
+ * commands_dispatch_idx, which this query cannot use.
+ */
+export async function dueCommandDeviceIds(limit = 5_000): Promise<string[]> {
+  const { rows } = await pool.query<{ device_id: string }>(
+    `SELECT DISTINCT device_id
+       FROM commands
+      WHERE status IN ('queued', 'approved')
+        AND expires_at > now()
+        AND (not_before IS NULL OR not_before <= now())
+      LIMIT $1`,
+    [limit],
+  );
+  return rows.map((r) => r.device_id.trim());
+}
+
+/**
+ * Expire commands fleet-wide, once per sweep.
+ *
+ * The per-device version of this runs inside claimPendingCommands, which only
+ * fires for a device that is connected and being drained. A truck that has been
+ * asleep for a day never gets one, so its lapsed unlock keeps reading 'queued'
+ * — and `/api/devices/:id/commands` selects status raw, with no expiry
+ * computed. An operator sees a pending unlock that will never fire, with
+ * nothing to tell them so.
+ *
+ * `expires_at` is what stops an unlock authorised at 09:00 from opening a valve
+ * at 14:00 somewhere else entirely, so this is the enforcement of that promise
+ * as well as the display of it.
+ *
+ * failure_cause is left null on purpose: nothing failed and nobody cancelled
+ * it. The authorisation simply ran out.
+ */
+export async function expireLapsedCommands(): Promise<number> {
+  const { rowCount } = await pool.query(
+    `UPDATE commands
+        SET status = 'expired',
+            last_error = 'authorisation expired before the device could be reached'
+      WHERE status IN ('queued', 'approved', 'draft', 'pending_approval')
+        AND expires_at <= now()`,
+  );
+  return rowCount ?? 0;
+}
+
+/**
+ * Deal with commands that were sent and never answered — differently depending
+ * on whether resending one can move a valve.
  *
  * Cellular links drop mid-exchange - one device here loses its socket every
  * few minutes - and a command written into a dying connection is simply gone.
  * Without this it sits at 'sent' forever: the operator sees "awaiting device
  * confirmation" indefinitely for something the device never received.
  *
- * Retries stay inside the command's own expiry, so an unlock cannot be
- * resurrected beyond the window it was authorised for.
+ * But "the device never received it" is an assumption, and for an unlock it is
+ * an unsafe one. Silence is not evidence that nothing happened: the command may
+ * have arrived, opened the valve, and the response been lost on the way back.
+ * The device auto-locks about a minute later, so a retry opens it a second
+ * time, possibly in transit.
+ *
+ * So physical commands are never returned to 'queued'. They time out to
+ * 'uncertain', which is the truthful record, and stay there unless physical
+ * evidence turns up later and upgrades them - see linkEventToCommand and
+ * confirmSubLockUnlock, which accept 'uncertain' precisely for this.
+ *
+ * Non-physical commands - queries and settings - retry as before. Resending a
+ * (P54,0) costs nothing.
+ *
+ * Returns the number actually re-queued, which is what the caller logs.
  */
 export async function requeueUnansweredCommands(): Promise<number> {
   const { rowCount } = await pool.query(
-    `UPDATE commands
+    `UPDATE commands c
         SET status = 'queued'
-      WHERE status = 'sent'
-        AND sent_at < now() - interval '3 minutes'
-        AND expires_at > now()
-        AND attempts < 3`,
+       FROM command_types t
+      WHERE t.command_type = c.command_type
+        AND NOT t.is_physical
+        AND c.status = 'sent'
+        AND c.sent_at < now() - interval '3 minutes'
+        AND c.expires_at > now()
+        AND c.attempts < 3`,
   );
 
-  // Beyond three attempts it is not a transient link problem.
+  // Beyond three attempts it is not a transient link problem. Non-physical
+  // only: a physical command has no attempt count to exhaust because it is
+  // never resent.
   await pool.query(
-    `UPDATE commands
+    `UPDATE commands c
         SET status = 'failed',
-            last_error = 'no response from device after 3 attempts'
-      WHERE status = 'sent'
-        AND sent_at < now() - interval '3 minutes'
-        AND attempts >= 3`,
+            last_error = 'no response from device after 3 attempts',
+            failure_cause = 'no_response'
+       FROM command_types t
+      WHERE t.command_type = c.command_type
+        AND NOT t.is_physical
+        AND c.status = 'sent'
+        AND c.sent_at < now() - interval '3 minutes'
+        AND c.attempts >= 3`,
+  );
+
+  // The whole point of the state. Not 'failed': it may have executed.
+  await pool.query(
+    `UPDATE commands c
+        SET status = 'uncertain',
+            last_error = 'no response from device; may or may not have executed',
+            failure_cause = 'no_response'
+       FROM command_types t
+      WHERE t.command_type = c.command_type
+        AND t.is_physical
+        AND c.status = 'sent'
+        AND c.sent_at < now() - interval '3 minutes'`,
   );
 
   return rowCount ?? 0;
 }
 
-export async function markCommandFailed(id: number, error: string): Promise<void> {
+/**
+ * Retire a command that will not be sent, without claiming it failed.
+ *
+ * 'expired' is the right shape for a command withdrawn before it reached the
+ * device: nothing was attempted, so there is nothing for the device to have
+ * refused, and the repeated-failure lockout must not see it.
+ */
+export async function expireCommand(id: number, reason: string): Promise<void> {
   await pool.query(
-    `UPDATE commands SET status = 'failed', last_error = $2 WHERE id = $1`,
-    [id, error],
+    `UPDATE commands
+        SET status = 'expired', last_error = $2, failure_cause = 'cancelled'
+      WHERE id = $1
+        AND status NOT IN ('confirmed', 'failed')`,
+    [id, reason],
   );
 }
 
 /**
- * Attribute a lock event to the command that caused it, for the audit trail.
+ * Record that a command failed - but only if it has not already finished.
  *
- * Deliberately conservative. Event source 4 means "remote static password",
- * which covers BOTH an SMS unlock and a platform unlock - the protocol gives
- * us no way to tell them apart. Attributing a card swipe or an SMS unlock to a
- * platform command would put a false claim in the audit log, which is worse
- * than leaving the event unattributed.
+ * Without the terminal guard this can un-confirm a confirmed command: the
+ * device answers, the response resolves the row to 'confirmed', and a later
+ * write failure on the same id overwrites it with 'failed'. The audit trail
+ * then says an unlock that demonstrably happened did not, which is the exact
+ * shape of wrong record the Ministry relies on this table not to produce.
  *
- * So we only link when a command of the matching type was confirmed by the
- * device seconds earlier, and the event itself reports a successful unlock.
- * Command *status* is driven by the P43/P52 response, not by this.
+ * 'uncertain' is deliberately NOT terminal here. It means the platform does not
+ * know, and a genuine transport failure discovered afterwards is real
+ * information about the same exchange.
+ */
+export async function markCommandFailed(
+  id: number,
+  error: string,
+  cause: FailureCause = 'unclassified',
+): Promise<void> {
+  await pool.query(
+    `UPDATE commands
+        SET status = 'failed', last_error = $2, failure_cause = $3
+      WHERE id = $1
+        AND status NOT IN ('confirmed', 'failed')`,
+    [id, error, cause],
+  );
+}
+
+/**
+ * Attribute a lock event to the command that caused it — and record it as that
+ * command's evidence that the lock physically moved.
+ *
+ * This is the only real proof the platform ever gets. The P43 response says the
+ * device accepted the command word; the P45 says the motor turned. Those are
+ * two different facts and the second is the one an operator actually needs.
+ *
+ * Deliberately conservative, in four ways:
+ *
+ * 1. Event source 4 means "remote static password", which covers BOTH an SMS
+ *    unlock and a platform unlock - the protocol gives us no way to tell them
+ *    apart. Attributing a card swipe or an SMS unlock to a platform command
+ *    would put a false claim in the audit log.
+ *
+ * 2. Matched on when the DEVICE says the event happened, corrected onto our
+ *    clock, never on delivery time. P45 reports are cached in flash and arrive
+ *    minutes late - hours, after a coverage gap - so a receipt-time window
+ *    would have to be hours wide, and a window that wide cannot tell two
+ *    commands apart. If the device's clock offset is unknown or stale, nothing
+ *    is attributed: a wrong correction gives a confident wrong attribution,
+ *    which is worse than none.
+ *
+ * 3. If more than one open command could explain the event, none is chosen. The
+ *    command stays 'uncertain', which is the honest record.
+ *
+ * 4. A command that already carries evidence does not collect a second piece.
+ *
+ * Accepts 'sent', 'uncertain' and 'confirmed'. 'uncertain' is the important
+ * one: the previous version required 'confirmed' AND used a window that closed
+ * a full minute before a command could even time out, so a P45 arriving after
+ * the timeout was orphaned - the exact case this exists to catch.
+ *
+ * Returns the command id it attributed to, or null.
  */
 export async function linkEventToCommand(
   deviceId: string,
   eventId: number,
   eventSourceCode: number,
   unlockAllowed: boolean,
-): Promise<void> {
-  if (!unlockAllowed) return;
+): Promise<number | null> {
+  if (!unlockAllowed) return null;
 
   const types =
     eventSourceCode === 4 ? ['unlock_static'] : eventSourceCode === 6 ? ['unlock_dynamic'] : [];
-  if (types.length === 0) return;
+  if (types.length === 0) return null;
 
-  // Match on when the DEVICE says the event happened versus when we sent the
-  // command - not on delivery times. P45 reports are cached in flash and
-  // arrive two to five minutes late, so anchoring on arrival misses them
-  // entirely. The device's own reported_at for a platform unlock matches
-  // sent_at to the second.
-  await pool.query(
-    `UPDATE lock_events le
-        SET command_id = c.id
-       FROM commands c
-      WHERE le.id = $1
-        AND c.device_id = $2
-        AND c.command_type = ANY($3)
-        AND c.status = 'confirmed'
-        AND c.sent_at IS NOT NULL
-        AND le.reported_at BETWEEN c.sent_at - interval '30 seconds'
-                               AND c.sent_at + interval '2 minutes'`,
+  const { rows } = await pool.query<{ id: number }>(
+    `WITH ev AS (
+       SELECT id, reported_at FROM lock_events WHERE id = $1
+     ),
+     candidates AS (
+       SELECT c.id
+         FROM commands c
+         JOIN device_state s ON s.device_id = c.device_id
+         CROSS JOIN ev
+        WHERE c.device_id = $2
+          AND c.command_type = ANY($3)
+          AND c.status IN ('sent', 'uncertain', 'confirmed')
+          AND c.sent_at IS NOT NULL
+          AND c.physically_evidenced_at IS NULL
+          -- No usable offset means no attribution. See point 2 above.
+          AND s.clock_offset_ms IS NOT NULL
+          AND s.clock_offset_at > now() - interval '24 hours'
+          -- The offset is device-minus-server, so subtracting it puts the
+          -- device's timestamp on our clock. The window runs past the
+          -- three-minute timeout on purpose: a P45 that arrives after its
+          -- command went 'uncertain' is precisely the evidence wanted.
+          AND (ev.reported_at - make_interval(secs => s.clock_offset_ms / 1000.0))
+                BETWEEN c.sent_at - interval '30 seconds'
+                    AND c.sent_at + interval '5 minutes'
+     ),
+     resolved AS (
+       SELECT id FROM candidates WHERE (SELECT count(*) FROM candidates) = 1
+     ),
+     linked AS (
+       UPDATE lock_events le SET command_id = r.id FROM resolved r WHERE le.id = $1
+       RETURNING le.id
+     ),
+     denormalised AS (
+       -- Keep the device row's copy of the newest event in step. Guarded on
+       -- reported_at so attributing an older, late-arriving event does not
+       -- stamp its command onto a newer one.
+       UPDATE device_state s
+          SET last_event_command_id = r.id
+         FROM resolved r, ev
+        WHERE s.device_id = $2
+          AND s.last_event_at = ev.reported_at
+     )
+     UPDATE commands c
+        SET physically_evidenced_at = now(),
+            physical_evidence_kind  = 'lock_event',
+            physical_evidence_id    = $1,
+            -- The lock moved, so the device did receive and act on the
+            -- command: the exchange succeeded after all. Nothing else is
+            -- upgraded — a 'failed' command that somehow moved a lock is a
+            -- contradiction worth leaving visible rather than tidying away.
+            status       = CASE WHEN c.status = 'uncertain' THEN 'confirmed' ELSE c.status END,
+            confirmed_at = COALESCE(c.confirmed_at, now()),
+            last_error   = CASE WHEN c.status = 'uncertain' THEN NULL ELSE c.last_error END,
+            failure_cause = CASE WHEN c.status = 'uncertain' THEN NULL ELSE c.failure_cause END
+       FROM resolved r
+      WHERE c.id = r.id
+      RETURNING c.id`,
     [eventId, deviceId, types],
   );
+  return rows[0]?.id ?? null;
+}
+
+export interface MatchedCommand {
+  id: number;
+  command_type: string;
+}
+
+export interface ResponseMatch {
+  /** The one command this response certainly answers, or null. */
+  matched: MatchedCommand | null;
+  /** Every open command it could have answered, matched or not. */
+  candidates: MatchedCommand[];
 }
 
 /**
- * Resolve a command from the device's own response.
+ * Work out which command a device response answers — or establish that it
+ * cannot be known.
+ *
+ * The old version took the most recently sent command matching the command
+ * word. That is a guess, and with two unlocks outstanding it is a coin toss
+ * that ends with one valve's opening recorded against the other truck's
+ * command. Deliberately separated from applying the result so the answer can
+ * be interpreted using the type of command it actually belongs to.
+ *
+ * A WLNET reply carries a serial, and the serial we sent is still sitting in
+ * `payload`, so it can break a tie. It is only ever used to narrow: the manual
+ * does not promise the device echoes it, so a serial matching nothing falls
+ * back to refusing rather than to concluding nothing was sent.
+ *
+ * P-commands carry no serial at all. With two outstanding, none is resolved.
+ */
+export async function matchCommandForResponse(
+  deviceId: string,
+  commandWord: string,
+  serial: string | null,
+): Promise<ResponseMatch> {
+  const { rows } = await pool.query<MatchedCommand & { payload_serial: string | null }>(
+    `SELECT id, command_type,
+            -- (deviceId,version,serial,WLNET,...) — third field, and only for
+            -- a WLNET payload. NULL for a P-command, which has no serial.
+            CASE WHEN payload LIKE '(%,%,%,WLNET,%'
+                 THEN split_part(payload, ',', 3) END AS payload_serial
+       FROM commands
+      WHERE device_id = $1
+        -- 'uncertain' included on purpose: a response arriving after the
+        -- timeout is still the device answering, and still resolves it.
+        AND status IN ('sent', 'uncertain')
+        AND payload LIKE ANY($2::text[])
+      ORDER BY sent_at DESC`,
+    [deviceId, patternsFor(commandWord)],
+  );
+
+  const candidates = rows.map((r) => ({ id: r.id, command_type: r.command_type }));
+  if (rows.length === 0) return { matched: null, candidates };
+  if (rows.length === 1) return { matched: candidates[0]!, candidates };
+
+  if (serial !== null) {
+    const bySerial = rows.filter((r) => r.payload_serial === serial);
+    if (bySerial.length === 1) {
+      const r = bySerial[0]!;
+      return { matched: { id: r.id, command_type: r.command_type }, candidates };
+    }
+  }
+  return { matched: null, candidates };
+}
+
+/**
+ * Record the device's answer against the command it answers.
  *
  * The response is the authority on whether a command was accepted: an unlock
  * answers (P43,1,0) or (P43,0,n), and a query answers with its value. Without
  * this, query commands sat at 'sent' indefinitely because only unlocks ever
  * had a completion path.
- *
- * Matches on the command word at the start of the payload, so (P44,1) is
- * resolved by a P44 response and nothing else.
  */
-export async function resolveCommandFromResponse(
-  deviceId: string,
-  commandWord: string,
+export async function applyCommandResponse(
+  id: number,
   ok: boolean,
   response: string,
-): Promise<number | null> {
-  const { rows } = await pool.query<{ id: number }>(
-    `WITH matched AS (
-       SELECT id FROM commands
-        WHERE device_id = $1
-          AND status = 'sent'
-          AND payload LIKE ANY($2::text[])
-        ORDER BY sent_at DESC LIMIT 1
-     )
-     UPDATE commands c
-        SET status       = CASE WHEN $3 THEN 'confirmed' ELSE 'failed' END,
-            confirmed_at = CASE WHEN $3 THEN now() END,
-            last_error   = CASE WHEN $3 THEN NULL ELSE $4 END,
-            response     = $4
-       FROM matched m
-      WHERE c.id = m.id
-      RETURNING c.id`,
-    [deviceId, patternsFor(commandWord), ok, response.slice(0, 500)],
+): Promise<void> {
+  await pool.query(
+    `UPDATE commands
+        SET status        = CASE WHEN $2 THEN 'confirmed' ELSE 'failed' END,
+            confirmed_at  = CASE WHEN $2 THEN now() END,
+            last_error    = CASE WHEN $2 THEN NULL ELSE $3 END,
+            -- The device itself said no. This is the only cause that carries
+            -- information about the password we hold, and the only one the
+            -- repeated-failure lockout may count.
+            failure_cause = CASE WHEN $2 THEN NULL ELSE 'device_rejected' END,
+            response      = $3
+      WHERE id = $1
+        AND status IN ('sent', 'uncertain')`,
+    [id, ok, response.slice(0, 500)],
   );
-  return rows[0]?.id ?? null;
+}
+
+/**
+ * A response arrived that could have answered any of these, and nothing
+ * distinguishes them. Say so rather than picking one.
+ *
+ * They stay eligible for physical evidence: a P45 arriving later can still
+ * name one of them, and that is real proof where this was only an inference.
+ */
+export async function markCommandsUnresolvable(ids: number[], response: string): Promise<void> {
+  if (ids.length === 0) return;
+  await pool.query(
+    `UPDATE commands
+        SET status = 'uncertain',
+            last_error = 'a device response matched this and ' || ($3::int - 1) ||
+                         ' other open command(s); which one it answered is not knowable',
+            response = COALESCE(response, $2)
+      WHERE id = ANY($1::bigint[])
+        AND status = 'sent'`,
+    [ids, response.slice(0, 500), ids.length],
+  );
 }
 
 /**
@@ -605,16 +1067,6 @@ function patternsFor(commandWord: string): string[] {
     : [`(${commandWord}%`];
 }
 
-/**
- * Confirm a sub-lock unlock from the sub-lock's own report.
- *
- * The WLNET,8 response is only an echo — it carries no success flag, and means
- * the master accepted the command for relay, not that the valve opened. The
- * sub-lock reporting itself unlocked is the first real evidence, and it
- * arrives later over LoRa.
- *
- * Matched on the sub-lock id inside the payload, which is where it already is.
- */
 /**
  * Record what a master says it has bound, from a WLNET,1 reply.
  *
@@ -648,44 +1100,88 @@ export async function recordBoundPeripherals(masterId: string, ids: string[]): P
   );
 }
 
-export async function confirmSubLockUnlock(masterId: string, peripheralId: string): Promise<void> {
-  await pool.query(
-    `WITH matched AS (
+/**
+ * Confirm a sub-lock unlock from the sub-lock's own report, and record that
+ * report as the command's physical evidence.
+ *
+ * The WLNET,8 response is only an echo — it carries no success flag, and means
+ * the master accepted the command for relay, not that the valve opened. The
+ * sub-lock reporting itself unlocked is the first real evidence, and it
+ * arrives later over LoRa.
+ *
+ * Matched on the sub-lock id inside the payload, which is where it already is.
+ * `readingId` is the sub_device_readings row that carries the claim, so the
+ * evidence points at something a person can go and look at.
+ *
+ * Returns the command id it confirmed, or null.
+ */
+export async function confirmSubLockUnlock(
+  masterId: string,
+  peripheralId: string,
+  readingId: number,
+): Promise<number | null> {
+  const { rows } = await pool.query<{ id: number }>(
+    `WITH candidates AS (
        SELECT id FROM commands
         WHERE device_id = $1
-          AND status = 'sent'
+          AND status IN ('sent', 'uncertain')
           AND command_type = 'unlock_sublock'
           AND payload LIKE '%' || $2 || '%'
+          AND physically_evidenced_at IS NULL
           -- The command's own effective window is at most 5 minutes; allow for
           -- LoRa relay and the master's reporting lag on top.
           AND sent_at > now() - interval '30 minutes'
-        ORDER BY sent_at DESC LIMIT 1
+     ),
+     resolved AS (
+       -- Two open unlocks for the same valve inside half an hour cannot be
+       -- told apart by a report that only says "this sub-lock is open". The
+       -- previous version took the most recent, which is a guess. Both stay
+       -- uncertain instead.
+       SELECT id FROM candidates WHERE (SELECT count(*) FROM candidates) = 1
      )
      UPDATE commands c
-        SET status = 'confirmed', confirmed_at = now()
-       FROM matched m WHERE c.id = m.id`,
-    [masterId, peripheralId],
+        SET status = 'confirmed',
+            confirmed_at = now(),
+            physically_evidenced_at = now(),
+            physical_evidence_kind  = 'peripheral_report',
+            physical_evidence_id    = $3,
+            last_error = NULL,
+            failure_cause = NULL
+       FROM resolved r
+      WHERE c.id = r.id
+      RETURNING c.id`,
+    [masterId, peripheralId, readingId],
   );
+  return rows[0]?.id ?? null;
 }
 
 /**
- * Adopt a new password only after the device has confirmed it.
+ * Adopt a new password only after the device has confirmed it — and only the
+ * password from the command the device was actually answering.
  *
  * Updating the database first and then failing to reach the device would
  * leave the platform holding a password the lock does not have - locked out
  * of our own hardware, with no way back except a physical visit.
+ *
+ * Takes the command id rather than finding one itself. The previous version
+ * took the most recent sent `set_password` for the device, which is a
+ * different command from the one that was answered whenever two rotations are
+ * in flight — and adopting the wrong new password locks us out just as
+ * thoroughly as adopting none. The caller has already established which
+ * command this response belongs to, or established that it cannot tell.
  */
-export async function promotePendingPassword(deviceId: string): Promise<string | null> {
+export async function promotePendingPassword(
+  deviceId: string,
+  commandId: number,
+): Promise<string | null> {
   const { rows } = await pool.query<{ new_password: string }>(
     `SELECT metadata->>'newPassword' AS new_password
        FROM commands
-      WHERE device_id = $1
+      WHERE id = $2
+        AND device_id = $1
         AND command_type = 'set_password'
-        AND status = 'sent'
-        AND metadata ? 'newPassword'
-      ORDER BY sent_at DESC
-      LIMIT 1`,
-    [deviceId],
+        AND metadata ? 'newPassword'`,
+    [deviceId, commandId],
   );
   const next = rows[0]?.new_password;
   if (!next) return null;
@@ -703,5 +1199,43 @@ export async function audit(
   await pool.query(
     'INSERT INTO audit_log (actor, action, device_id, command_id, detail) VALUES ($1, $2, $3, $4, $5)',
     ['gateway', action, deviceId, commandId ?? null, JSON.stringify(detail)],
+  );
+}
+
+/**
+ * Publish the gateway's own state so /api/health can report it.
+ *
+ * The API runs in a different process and cannot see the session map, the
+ * listener, or how long the last sweep took. This is the only channel between
+ * them. Failures are swallowed by the caller: health reporting must never be
+ * the thing that takes the gateway down.
+ */
+export async function reportGatewayHealth(health: {
+  instance: string;
+  startedAt: Date;
+  sessions: number;
+  listenerConnected: boolean;
+  lastSweepMs: number | null;
+  lastSweepAt: Date | null;
+}): Promise<void> {
+  await pool.query(
+    `INSERT INTO gateway_health
+       (instance, started_at, sessions, listener_connected, last_sweep_ms, last_sweep_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, now())
+     ON CONFLICT (instance) DO UPDATE SET
+       started_at         = EXCLUDED.started_at,
+       sessions           = EXCLUDED.sessions,
+       listener_connected = EXCLUDED.listener_connected,
+       last_sweep_ms      = EXCLUDED.last_sweep_ms,
+       last_sweep_at      = EXCLUDED.last_sweep_at,
+       updated_at         = now()`,
+    [
+      health.instance,
+      health.startedAt,
+      health.sessions,
+      health.listenerConnected,
+      health.lastSweepMs,
+      health.lastSweepAt,
+    ],
   );
 }

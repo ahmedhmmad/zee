@@ -41,10 +41,30 @@ src/protocol/     Frame codec — the heart. Fully unit-tested.
   decode-ascii.ts   P45 lock events, heartbeat, time sync, dynamic password
   encode.ts       Acks and outbound commands
 src/gateway/      TCP server, per-socket sessions, persistence
+src/api/          Fastify routes, WebSocket push, device projection
+public/           Operator console — vanilla JS, Arabic UI, no framework
 migrations/       Schema
-scripts/          Device simulator
-test/             59 tests built from the manual's own worked examples
+scripts/          Device simulator, fleet simulator, migration runner, user admin
+deploy/           systemd units and the install script
+docs/             OpenAPI spec and the scaling roadmap
+test/             244 tests: the protocol codec from the manual's worked
+                  examples, plus the gateway session and command lifecycle
 ```
+
+## Roadmap
+
+The platform is field-proven on 2 trucks and being scaled to ~3,000.
+[`docs/scaling-plan.md`](docs/scaling-plan.md) is the plan in force — five phases, with Phase 1
+(correctness, capacity and pilot safety) specified in full.
+
+**Phase 1 is implemented.** What remains of it is verification: a staging run against the fleet
+simulator at the burst figures the plan sizes for, and the JT709 bench test that decides whether
+valve sub-lock unlocking can be switched back on. `CLAUDE.md` lists the invariants Phase 1
+established — read those before touching the command lifecycle, because each fixed a defect that
+is invisible in normal operation and each would look like a harmless simplification to undo.
+
+[`docs/scaling-plan-superseded.md`](docs/scaling-plan-superseded.md) is the previous revision,
+kept only so the design it proposed — and the reasons it was rejected — stay on the record.
 
 ## Development
 
@@ -56,10 +76,15 @@ npm install
 npm test
 ```
 
-The test suite decodes the exact hex frames printed in
-`JT701D_JT701E Protocol ManualV1.9.5.pdf` and asserts the field values the
+The protocol tests decode the exact hex frames printed in
+`JT701D_JT701E Protocol ManualV1.9.5.pdf` and assert the field values the
 manual states for each. That means the codec is verified against vendor
 ground truth without any hardware.
+
+The gateway tests drive a real `DeviceSession` over `test/fake-socket.ts` with a stubbed store,
+so command dispatch, chunk serialisation, backpressure and the replay limiter are exercised as
+behaviour rather than asserted as shape. Store queries themselves still have no database in the
+suite; those are pinned by reading the SQL, and need a staging run behind any change.
 
 ### Running locally against the simulator
 
@@ -156,6 +181,18 @@ Vehicles without a GPS fix are returned with a `null` geometry rather than
 dropped, so a partner can tell "present but unlocatable" from "no longer in
 the fleet".
 
+Each vehicle carries position, speed, heading, battery, `locked`,
+`ropeInserted`, `alarms`, the newest lock event (`lastEvent` — of *any* kind,
+not only an unlock), and the JT709 valve sub-locks bound to it. A sub-lock's
+`locked` is three-state: `true`, `false`, or `null` meaning the platform cannot
+tell, which a consumer must not draw as locked. **`docs/integration-api.md` is
+the document to hand to whoever builds the other side** — full field table, both
+delivery routes, and a Leaflet example.
+
+The console's **الربط الخارجي** page renders the same feed through the same
+shaping code, so the exact bytes a partner receives can be read and copied
+without a token, alongside the issued tokens and when each was last used.
+
 Three properties of this API are deliberate and should stay that way:
 
 - **Read only.** No unlock, no configuration, no write of any kind is
@@ -168,27 +205,36 @@ Three properties of this API are deliberate and should stay that way:
 Revoke with `UPDATE api_tokens SET is_active = false WHERE name = '...';`, and
 see `last_used_at` / `request_count` in that table for who is actually calling.
 
-## Basemaps
+Browser callers are off by default: the feed sends no CORS headers unless
+`INTEGRATION_CORS_ORIGINS` lists their exact origin. Prefer having the partner's
+own server hold the token and re-serve the JSON — a token in browser JavaScript
+is readable by anyone who views the page source, and with it the live position
+of every tanker.
 
-Three, chosen per operator from the picker on the map and remembered locally:
+## The map
 
-| Provider | Notes |
-|---|---|
-| **Google** | Best Libyan street data. Needs an API key and a billing account. |
-| **Esri** | Satellite imagery, free, no key. Paired with Esri's transparent places layer, or it is unreadable. |
-| **OpenStreetMap** | Free, no key. Place names for Libya are dated. |
+One basemap, one library: MapLibre over OpenStreetMap, with every tile proxied
+through `/api/tiles/osm/{z}/{x}/{y}.png` and cached on disk, because tile hosts
+are not reliably reachable from Libya. No key, no billing account, no external
+dependency in the browser.
 
-All raster tiles are proxied through `/api/tiles/<provider>/{z}/{x}/{y}.png`
-and cached on disk, because tile hosts are not reliably reachable from Libya.
-Note that providers disagree about tile URLs - OSM is `{z}/{x}/{y}.png`, Esri
-is `{z}/{y}/{x}` with no extension and returns **JPEG** - so the proxy holds a
-template per provider and reads the content type back from the bytes. Swapping
-only the hostname fetches transposed tiles: a map that renders perfectly and
-shows the wrong part of the world.
+This replaced three implementations behind one adapter interface — Google, the
+ArcGIS SDK and this one — with a picker to choose between them. The partner
+platform this console now shares a data shape with draws its own map the same
+way, so an operator moving between the two systems sees one map behaving one
+way, and marker code written against one runs against the other.
 
-Set the default with `TILE_PROVIDER` in `.env`. Google is used only when a key
-is configured; if it fails to load, the map falls back to Esri imagery rather
-than to a blank panel.
+What that gave up: Google's Libyan street data, which is better than OSM's, and
+the Esri satellite layer. The tile proxy still carries its Esri provider and the
+test that pins the axis order — OSM is `{z}/{x}/{y}.png`, Esri is `{z}/{y}/{x}`
+with no extension and returns **JPEG**, and swapping only the hostname fetches
+transposed tiles: a map that renders perfectly and shows the wrong part of the
+world. So imagery is one entry in `RASTER_BASEMAPS` away, and nothing
+server-side would have to come back with it.
+
+`ARCGIS_API_KEY` remains, and is not a basemap key. It buys one thing: the road
+route drawn to an arrival point, from Esri's routing service. Without it the
+destination still appears, joined by a straight line.
 
 ## Evaluation period
 

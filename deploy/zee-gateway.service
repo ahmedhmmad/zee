@@ -11,6 +11,14 @@ WorkingDirectory=/home/zee/htdocs/locks.ahmedhammad.page
 EnvironmentFile=/home/zee/htdocs/locks.ahmedhammad.page/.env
 ExecStart=/usr/bin/node src/gateway/index.ts
 Restart=always
+# One file descriptor per connected device, plus the pool and the logs.
+# Node raises RLIMIT_NOFILE from soft to hard at startup and systemd >= 240
+# defaults to 1024:524288, so this is usually already fine — set explicitly so
+# it does not depend on which systemd the box happens to run. Check the live
+# value with:
+#   cat /proc/$(systemctl show -p MainPID --value zee-gateway)/limits | grep "open files"
+LimitNOFILE=65535
+
 RestartSec=5
 
 # Runs unprivileged: the gateway binds 10001, which is above 1024, so no

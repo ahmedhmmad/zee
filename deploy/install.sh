@@ -169,8 +169,7 @@ fi
 EMAIL=""
 [ $IS_IP -eq 1 ] || ask EMAIL "Email for certificate notices" "eng.ahammad7@gmail.com"
 ask_secret AUTH_PASSWORD "Console login password (you will use this to sign in)"
-ask GMAPS_KEY  "Google Maps API key (blank to use OpenStreetMap)" ""
-ask ARCGIS_KEY "ArcGIS API key from the client's Esri licence (blank to skip)" ""
+ask ARCGIS_KEY "ArcGIS key for road routes to arrival points (blank to skip)" ""
 ask DUMP_FILE  "Path to database dump from the old server (blank for empty DB)" ""
 
 # Evaluation period. A disclosed pilot term, not a hidden switch: after this
@@ -316,12 +315,10 @@ info "Restore      ${DUMP_FILE:-none — starting with an empty database}"
 # Spelled out rather than done with ${x:+a}${x:-b}: that pair reads as an
 # if/else but is not one - ${x:-b} substitutes x's own VALUE whenever x is set,
 # so both halves fire and the value is appended to the label. Here that printed
-# the Google Maps key to the terminal in a script whose whole premise is that
+# an API key to the terminal in a script whose whole premise is that
 # secrets are never displayed.
 if [ -n "$ARCGIS_KEY" ]; then
-  info "Maps         Esri/ArcGIS (licensed)$([ -n "$GMAPS_KEY" ] && echo ", Google also available")"
-elif [ -n "$GMAPS_KEY" ]; then
-  info "Maps         Google"
+  info "Maps         OpenStreetMap, with Esri road routes to arrival points"
 else
   info "Maps         OpenStreetMap"
 fi
@@ -387,6 +384,84 @@ if ss -lntH 'sport = :5432' | grep -qv '127.0.0.1\|::1'; then
 fi
 ok "PostgreSQL bound to loopback only"
 
+# --- 2b. tuning for 3,000 devices -------------------------------------------
+#
+# The Postgres defaults are sized for a machine that might be doing anything.
+# This one is doing one thing: absorbing roughly 36 position inserts a second in
+# the steady state, and bursts of thousands when a fleet reconnects after a
+# restart and replays its buffered positions.
+#
+# Written to conf.d rather than edited into postgresql.conf, so a package
+# upgrade cannot silently revert it and so removing the file removes the change.
+PG_MEM_MB=$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1024 ))
+cat > "/etc/postgresql/$PG_VER/main/conf.d/60-zee.conf" <<PGCONF
+# Managed by deploy/install.sh — do not edit by hand; re-running the installer
+# rewrites this file. Sized for the Zee lock platform on a $PG_MEM_MB MB box.
+
+# A quarter of RAM is the standard starting point for a dedicated database.
+shared_buffers = $(( PG_MEM_MB / 4 ))MB
+# What the planner assumes is cached, counting the OS page cache. Too low and
+# it chooses sequential scans over the indexes this workload depends on.
+effective_cache_size = $(( PG_MEM_MB / 2 ))MB
+work_mem = 16MB
+maintenance_work_mem = 256MB
+
+# Checkpoint less often and spread the writes. The default max_wal_size makes a
+# steady insert stream checkpoint every few minutes, and each one is a latency
+# spike straight into the position path.
+max_wal_size = 4GB
+checkpoint_timeout = 15min
+checkpoint_completion_target = 0.9
+wal_compression = on
+
+# SSD, not a spinning disk: random reads cost close to sequential ones. Left at
+# the default of 4.0 the planner avoids index scans it should be choosing.
+random_page_cost = 1.1
+
+# Anything over a second is worth seeing. Without this the first evidence of a
+# slow query is an operator saying the console feels slow.
+log_min_duration_statement = 1000
+shared_preload_libraries = 'pg_stat_statements'
+
+# positions and commands churn far faster than the default autovacuum
+# thresholds assume; per-table settings are applied below.
+PGCONF
+
+# Table-level autovacuum, which cannot live in a config file. positions is
+# append-only but still needs its visibility map maintained for index-only
+# scans; commands is updated on every state change and bloats without it.
+sudo -u postgres psql -qd zee -c "
+  ALTER TABLE IF EXISTS positions SET (autovacuum_vacuum_scale_factor = 0.02,
+                                       autovacuum_analyze_scale_factor = 0.01);
+  ALTER TABLE IF EXISTS commands  SET (autovacuum_vacuum_scale_factor = 0.05,
+                                       autovacuum_analyze_scale_factor = 0.02);
+" 2>/dev/null || true
+
+# Enforced database-side, so a query that hangs cannot hold a pool connection
+# indefinitely no matter what the application forgot. Maintenance raises it for
+# itself with SET LOCAL.
+sudo -u postgres psql -qc "
+  ALTER ROLE zee_app SET statement_timeout = '15s';
+  ALTER ROLE zee_app SET idle_in_transaction_session_timeout = '30s';
+" || true
+
+# shared_buffers and shared_preload_libraries need a restart, not a reload.
+# Seconds, and the services reconnect on their own.
+systemctl restart postgresql
+ok "PostgreSQL tuned for the fleet (${PG_MEM_MB}MB box) and restarted"
+
+# The kernel's accept queue. When 3,000 devices reconnect together the default
+# somaxconn of 4096 is fine, but older kernels default to 128 — and anything the
+# listener asks for above somaxconn is silently truncated to it.
+cat > /etc/sysctl.d/60-zee.conf <<'SYSCTL'
+# Managed by deploy/install.sh. The gateway asks for a listen backlog of 1024;
+# somaxconn is the ceiling that request is clamped to.
+net.core.somaxconn = 4096
+net.ipv4.tcp_max_syn_backlog = 8192
+SYSCTL
+sysctl -q --system >/dev/null 2>&1 || true
+ok "kernel accept queue raised for fleet-wide reconnects"
+
 # --- 3. application ---------------------------------------------------------
 
 bold "3/6  Application"
@@ -422,15 +497,18 @@ GATEWAY_PORT=$GATEWAY_PORT
 GATEWAY_HOST=0.0.0.0
 DATABASE_URL=postgres://zee_app:$DB_PASSWORD@127.0.0.1:5432/zee
 REQUIRE_KNOWN_DEVICE=true
+# Valve sub-lock unlocking stays off: it has no confirmation path yet, so the
+# platform cannot say whether a valve opened. Master unlocking is unaffected.
+SUBLOCK_UNLOCK_ENABLED=false
 API_PORT=$API_PORT
 API_HOST=127.0.0.1
+# Seeded into a named account called "operator" on first start, then unused.
+# Create an account per person with: npm run user:add -- <name> <password> --unlock
 AUTH_PASSWORD=$AUTH_PASSWORD
 COOKIE_SECRET=$COOKIE_SECRET
 LOG_LEVEL=info
 TILE_CACHE_DIR=$APP_DIR/.cache/tiles
-GOOGLE_MAPS_API_KEY=$GMAPS_KEY
 ARCGIS_API_KEY=$ARCGIS_KEY
-ARCGIS_VERSION=4.31
 
 # Evaluation period (disclosed pilot term). After this date the platform stops
 # serving until the date is updated and the services restarted. Blank = no

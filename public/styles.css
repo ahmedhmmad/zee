@@ -273,7 +273,25 @@ label { font-size: .85rem; color: var(--muted); }
 .feed li.ok { border-inline-start-color: var(--accent); }
 .feed li.bad { border-inline-start-color: var(--danger); }
 .feed li.pending { border-inline-start-color: var(--warn); }
+/*
+ * 'uncertain' is neither a milder failure nor a slower success — the command
+ * may have executed and the platform cannot tell. Dashed rather than solid, so
+ * an operator scanning the list reads an unfinished edge rather than a colour
+ * that looks like progress.
+ */
+.feed li.uncertain {
+  border-inline-start-color: var(--warn);
+  border-inline-start-style: dashed;
+}
 .feed .when { color: var(--muted); font-size: .75rem; }
+
+/*
+ * Physical movement, shown apart from the command's status. "No evidence" is
+ * deliberately not styled as an error: it is a statement about what we know.
+ */
+.feed .evidence { font-size: .76rem; margin-block-start: .25rem; }
+.feed .evidence.yes { color: var(--accent); }
+.feed .evidence.no { color: var(--warn); }
 .feed .empty { color: var(--muted); }
 
 /* --- Modal and toast ---------------------------------------------------- */
@@ -452,6 +470,43 @@ select {
 }
 .locations-list .empty { color: var(--muted); }
 
+/* --- External integration page --------------------------------------------
+ *
+ * The JSON block is forced LTR and left-aligned inside an otherwise RTL
+ * console: it is machine data, and mirroring it puts the braces on the wrong
+ * side of what is meant to be pasted somewhere else verbatim.
+ */
+.integration-endpoints { max-inline-size: 720px; margin-block: 1rem; }
+.endpoint-list {
+  list-style: none;
+  margin: .5rem 0;
+  padding: 0;
+  font-size: .85rem;
+  line-height: 2;
+}
+.endpoint-list code { direction: ltr; unicode-bidi: isolate; }
+
+.page-head-sub { margin-block-start: 1.5rem; max-inline-size: 720px; }
+.integration-controls { display: flex; gap: .4rem; align-items: center; }
+
+.json-view {
+  max-inline-size: 720px;
+  max-block-size: 45vh;
+  overflow: auto;
+  margin: 0 0 1.5rem;
+  padding: .9rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .78rem;
+  line-height: 1.6;
+  text-align: left;
+  white-space: pre;
+  /* Selectable for a manual copy when the clipboard API is unavailable. */
+  user-select: text;
+}
+
 /* Arrow points where the vehicle is heading; upright circle when stopped. */
 .truck-arrow { display: inline-block; font-size: 15px; line-height: 1; transition: transform .3s ease; }
 .truck-marker.moving { background: var(--accent); }
@@ -461,8 +516,9 @@ select {
  * happened to face, so an arrow there points somewhere meaningless - and it
  * read as "moving" to an operator looking at a parked truck.
  *
- * This is what the Google adapter already does by swapping the symbol between
- * FORWARD_CLOSED_ARROW and CIRCLE; the two basemaps now agree.
+ * The Google adapter did this by swapping its symbol between
+ * FORWARD_CLOSED_ARROW and CIRCLE. That adapter is gone; the behaviour it
+ * established is the one to keep.
  */
 .truck-marker:not(.moving) .truck-arrow { display: none; }
 
@@ -530,8 +586,7 @@ select {
  * transform then offset it from there: off the bottom of the map and clipped.
  *
  * The element was in the DOM with the right coordinates and full opacity, and
- * simply never visible - and only on the MapLibre basemaps, since Google draws
- * its own markers and never matches this class.
+ * simply never visible.
  *
  * No rule is needed: MapLibre's `position: absolute` is itself a containing
  * block for the label. Do not add one back.
@@ -589,36 +644,4 @@ select {
 /* Password read result, shown where the read was requested. */
 .dev-pw { margin-block-start: .4rem; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
 
-/* --- Basemap picker -------------------------------------------------------
-   Sits over the map, mirrored to the inline-start edge so it does not collide
-   with the map library's own controls, which all sit top-left. */
-.basemap-picker {
-  position: absolute;
-  inset-block-start: 0.75rem;
-  inset-inline-end: 0.75rem;
-  z-index: 5;
-  display: flex;
-  gap: 0.25rem;
-  padding: 0.25rem;
-  border-radius: 0.6rem;
-  background: var(--surface, #fff);
-  box-shadow: 0 1px 6px rgb(0 0 0 / 0.25);
-}
 
-.basemap-picker button {
-  padding: 0.35rem 0.75rem;
-  border: 0;
-  border-radius: 0.45rem;
-  background: transparent;
-  color: var(--text, #111);
-  font: inherit;
-  font-size: 0.85rem;
-  cursor: pointer;
-}
-
-.basemap-picker button:hover { background: var(--surface-2, #f0f0f0); }
-
-.basemap-picker button.active {
-  background: var(--accent, #1b7f5a);
-  color: #fff;
-}

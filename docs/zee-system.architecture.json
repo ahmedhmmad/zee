@@ -1,0 +1,264 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "The Zee Lock Platform Today",
+    "locale": "en",
+    "output": "zee-system.html",
+    "viewBox": [
+      1040,
+      400
+    ],
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "device-path",
+        "label": "The device path",
+        "focus": [
+          "sublock",
+          "master",
+          "gateway",
+          "db"
+        ],
+        "note": "Raw TCP on its own port. No HTTP anywhere between a lock and the database."
+      },
+      {
+        "id": "who-reads",
+        "label": "Who reads the fleet",
+        "focus": [
+          "db",
+          "api",
+          "nginx",
+          "console",
+          "partner"
+        ],
+        "note": "One projection serves both readers: the console gets it pushed, the partner pulls it."
+      },
+      {
+        "id": "one-way-in",
+        "label": "One way in per caller",
+        "focus": [
+          "nginx",
+          "api",
+          "partner"
+        ],
+        "note": "A session cookie for people, a revocable bearer token for machines, and no write path for either."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "sublock",
+      "type": "external",
+      "label": "JT709EX Valve",
+      "sublabel": "sub-lock, sleeps",
+      "pos": [
+        15,
+        40
+      ],
+      "size": [
+        120,
+        54
+      ]
+    },
+    {
+      "id": "master",
+      "type": "external",
+      "label": "JT701D Master",
+      "sublabel": "on the tanker",
+      "pos": [
+        15,
+        170
+      ],
+      "size": [
+        120,
+        54
+      ]
+    },
+    {
+      "id": "gateway",
+      "type": "backend",
+      "label": "Gateway",
+      "sublabel": "zee-gateway :10001",
+      "pos": [
+        190,
+        170
+      ],
+      "size": [
+        120,
+        54
+      ],
+      "tag": "allowlist"
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "PostGIS, loopback",
+      "pos": [
+        365,
+        170
+      ],
+      "size": [
+        120,
+        54
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "API",
+      "sublabel": "zee-api :3333",
+      "pos": [
+        540,
+        170
+      ],
+      "size": [
+        120,
+        54
+      ]
+    },
+    {
+      "id": "nginx",
+      "type": "cloud",
+      "label": "Nginx",
+      "sublabel": "TLS :443",
+      "pos": [
+        715,
+        170
+      ],
+      "size": [
+        120,
+        54
+      ]
+    },
+    {
+      "id": "console",
+      "type": "frontend",
+      "label": "Console",
+      "sublabel": "MapLibre + OSM",
+      "pos": [
+        890,
+        40
+      ],
+      "size": [
+        120,
+        54
+      ]
+    },
+    {
+      "id": "partner",
+      "type": "external",
+      "label": "Partner Map",
+      "sublabel": "polls /api/v1",
+      "pos": [
+        890,
+        300
+      ],
+      "size": [
+        120,
+        54
+      ],
+      "tag": "read-only"
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "One Ubuntu host — only :10001 and :443 are public",
+      "wraps": [
+        "gateway",
+        "db",
+        "api",
+        "nginx"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "lora",
+      "from": "sublock",
+      "to": "master",
+      "label": "LoRa 433 MHz",
+      "variant": "dashed",
+      "labelDy": 24
+    },
+    {
+      "id": "device-tcp",
+      "from": "master",
+      "to": "gateway",
+      "label": "raw TCP, no Nginx",
+      "variant": "emphasis",
+      "labelAt": [
+        163,
+        238
+      ]
+    },
+    {
+      "id": "gateway-writes",
+      "from": "gateway",
+      "to": "db",
+      "label": "positions, events, status",
+      "variant": "emphasis",
+      "labelDy": 70
+    },
+    {
+      "id": "api-reads",
+      "from": "api",
+      "to": "db",
+      "label": "reads; queues commands",
+      "variant": "emphasis",
+      "labelAt": [
+        513,
+        238
+      ]
+    },
+    {
+      "id": "proxy",
+      "from": "nginx",
+      "to": "api",
+      "label": "proxy_pass",
+      "labelDy": 70
+    },
+    {
+      "id": "operator",
+      "from": "console",
+      "to": "nginx",
+      "label": "HTTPS + WebSocket",
+      "variant": "emphasis"
+    },
+    {
+      "id": "integration",
+      "from": "partner",
+      "to": "nginx",
+      "label": "HTTPS + bearer token",
+      "variant": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Two processes, one database",
+      "items": [
+        "The gateway owns the truck sockets; the API owns the browsers",
+        "They never call each other: the database announces every write"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "One map, one shape",
+      "items": [
+        "MapLibre over proxied OpenStreetMap, no basemap picker",
+        "The console reads the partner feed's fields plus the operator's own"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "What cannot cross",
+      "items": [
+        "The partner feed is read-only; unlocking stays with a named operator",
+        "The device allowlist is the only authentication the TCP protocol has"
+      ]
+    }
+  ]
+}
