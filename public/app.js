@@ -2128,7 +2128,10 @@ function applyUpdate(raw) {
   let touchedSelected = false;
 
   for (const device of incoming) {
-    if (!device?.device_id) continue;
+    // The pushed row is the console projection, so the key is `deviceId` —
+    // the database's `device_id` never reaches the browser. Guarding on the
+    // column name skipped every update and left the map frozen until reload.
+    if (!device?.deviceId) continue;
     const i = byId.get(device.deviceId);
     if (i === undefined) {
       byId.set(device.deviceId, state.devices.length);
